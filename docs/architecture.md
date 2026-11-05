@@ -53,8 +53,10 @@ These decide whether the port works, and each has its own stage.
    any free address of the code region, and `svcSetProcessMemoryPermission` makes it read/write.
    The NRO keeps a free 4 GB window on a 4 GB boundary, maps heap memory where the game's memory
    is, and answers a fault anywhere else in the window by mapping a 64 KB piece there
-   (`src/platform/nx_guest_fault.s` takes libnx's exception entry). The stage 1 NRO tests all
-   three on the console: 512 MB mapped whole, 512 pieces of 64 KB, and faults across the 4 GB.
+   (`src/platform/nx_guest_fault.s` takes libnx's exception entry). On the console this works:
+   512 MB mapped and zeroed in 90 ms, a 64 KB piece in 20 µs, a fault answered in 28 µs. Each
+   piece stays a block of its own for the kernel, whose supply of blocks is limited, so the
+   runtime maps the game's memory in large ranges and leaves pieces for stray touches.
 2. **Cores.** The PS3 runs the game on a two-thread PPU and six SPUs. The Switch gives a game three
    1 GHz Cortex-A57 cores (a fourth in part). The SPU programs become host tasks, and the game's
    own threads share the cores. Soulbrandt's notes show HighGraphics waiting in libsre's queue for

@@ -29,16 +29,31 @@ takeover (2026-11-05):
 | `svcMapPhysicalMemory`, the first plan for guest memory | **not available**: hbloader's process has no system resource; its alias region is 6 GB, a 36-bit address space |
 | The text on the screen | went into the log instead, so the screen stayed black; fixed for the next test |
 
+The second test, the same day, on the same console, tried guest memory the other way
+(docs/architecture.md):
+
+| What | Result |
+| --- | --- |
+| Address space | 36-bit: code region 0x8000000-0x1000000000, heap and alias regions inside it |
+| Process handle, `svcMapProcessCodeMemory`, `svcSetProcessMemoryPermission` | given, allowed, allowed |
+| A free 4 GB window on a 4 GB boundary | found, at 0x400000000 |
+| Main and RSX memory, 512 MB, mapped and zeroed | 90 ms |
+| 512 pieces of 64 KB, mapped one by one | 20 µs each; each stays a block of its own for the kernel |
+| Faults across the 4 GB (null page, gaps, stacks, the top edge) | 9 of 9 answered, 28 µs each |
+| Everything unmapped and given back before the exit | yes |
+| The screen text | no longer in the log |
+
 ## Not checked yet
 
-The second test of the stage 1 NRO: guest memory the other way (docs/architecture.md). The log
-should end with `guest probe: works`, and the screen should show the text again.
+How many separate pieces the kernel allows before it runs out of memory blocks: each piece
+mapped on its own stays a block of its own. Stage 6 maps the game's memory in large ranges and
+leaves 64 KB pieces for stray touches; it will log how many pieces it maps.
 
 ## Roadmap
 
 | Stage | State |
 | --- | --- |
-| 1. Extraction, asset structure, sources | **done**; first console test passed, guest memory test waiting |
+| 1. Extraction, asset structure, sources | **done**, both console tests passed |
 | 2. Asset packaging: paths, case, the file layer on Horizon, the decrypted inputs | next |
 | 3. Engine dependencies: RSX/libgcm to deko3D, PPU/SPU threads to the Switch's cores | to do |
 | 4. The port's build: ps3recomp's runtime and the lifted game with devkitA64 and CMake | to do |
