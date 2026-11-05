@@ -113,7 +113,15 @@ builds as it is. Where it can go straight to Horizon:
 
 The stage 3 test NRO, before its text screen, draws two seconds of a triangle through deko3D with two
 shader programs uam compiled at build time (`src/shaders`, `src/platform/nx_gpu_probe.c`). Then it
-measures the cores (`src/platform/nx_cpu_probe.c`): which cores and priorities the process may use,
-the same work on each core, how long one thread takes to wake another (through address
-arbitration and through a condition variable, across cores and on one core), how close a 1 ms
-sleep comes to 1 ms, and what a yield costs. The results go in docs/status.md.
+measures the cores (`src/platform/nx_cpu_probe.c`). On firmware 22.5.0 (the full table is in
+docs/status.md):
+
+- **deko3D works:** device, swapchain and uam's shaders load, and 120 frames keep the display's 60 Hz.
+- **Three cores, all alike:** cores 0 to 2 (core 3 is the system's) run the same work in 117 ms
+  each. Priorities 28 to 59 are the game's.
+- **Address arbitration is the way to wait:** a wake across cores takes 0.5 µs through
+  `svcWaitForAddress`, 4.1 µs through a condition variable. The runtime's `WaitOnAddress` goes
+  onto it, and so can its events and semaphores.
+- **Short sleeps are exact:** 1 ms takes 1.002 ms, the longest 1.005 ms. The spin tail Soulbrandt's
+  `sys_timer_usleep` adds on Windows (its docs/28) is not needed here, and would only cost a core.
+- **Inflating:** zlib does 107 MB/s on one core, a first idea of what the game's decompressor costs.

@@ -60,10 +60,22 @@ The stage 2 test, the same day, on the same console and SD card:
 | The cache's way of writing: size set first, 8 MB in 64 KB pieces, flushed, read back, renamed, removed | works, **10 MB/s** |
 | Decrypted files on the card | the 26 scripts; `EBOOT.elf` and `libsre.prx` not yet |
 
-## Not checked yet
+The stage 3 test, the same day, on the same console:
 
-The stage 3 test NRO: two seconds of a triangle through deko3D with shaders uam built, and the
-cores (docs/engine.md). The log's `gpu:` and `cpu:` lines have the results.
+| What | Result |
+| --- | --- |
+| deko3D: device, queue, a 1280x720 swapchain, two shader programs uam compiled at build time | all load; the triangle is on the screen |
+| 120 frames of it | 16.3 ms each, the slowest 17.1 ms: the display's 60 Hz |
+| Cores the process may use | 0, 1 and 2 (mask 0x7); core 3 is the system's |
+| Thread priorities it may use | 28 to 59 (hbloader's main thread is at 44) |
+| The same work on each core alone | 117 ms on each of the three |
+| One thread waking another through address arbitration (`svcWaitForAddress`) | 0.5 µs across cores, 2.2 µs on one core |
+| The same through a condition variable (what pthreads use) | 4.1 µs across cores: eight times slower |
+| `svcSleepThread` for 1 ms | 1.002 ms on average, the longest 1.005 ms |
+| A yield | 0.34 µs |
+| zlib inflating the game's DCX blocks on one core | 107 MB/s |
+
+## Not checked yet
 
 The game's cache on the SD card. The game copies files it loads into `/dev_hdd1` and reads the
 copies on later loads (Soulbrandt's docs/101: 173 copies during the load into 1-1). On the PS3
@@ -83,8 +95,8 @@ leaves 64 KB pieces for stray touches; it will log how many pieces it maps.
 | --- | --- |
 | 1. Extraction, asset structure, sources | **done**, both console tests passed |
 | 2. Asset packaging: paths, case, the file layer on Horizon, the decrypted inputs | **done**, checked on the PC and the console |
-| 3. Engine dependencies: RSX/libgcm to deko3D, PPU/SPU threads to the Switch's cores | **mapped** (docs/engine.md), its console test waiting |
-| 4. The port's build: ps3recomp's runtime and the lifted game with devkitA64 and CMake | to do |
+| 3. Engine dependencies: RSX/libgcm to deko3D, PPU/SPU threads to the Switch's cores | **done** (docs/engine.md), checked on the console |
+| 4. The port's build: ps3recomp's runtime and the lifted game with devkitA64 and CMake | next: needs `EBOOT.elf` and `libsre.prx` from RPCS3 |
 | 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | to do |
 | 6. POSIX layer, alignment, guest memory on the Switch's heap | to do |
 | 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | to do |
