@@ -22,7 +22,7 @@ to run natively, with a [deko3D](https://github.com/devkitPro/deko3d) renderer.
 ---
 
 > [!WARNING]
-> Early work: stage 1 of the [roadmap](docs/status.md). The game does not run yet. Today's NRO
+> Early work: stage 2 of the [roadmap](docs/status.md). The game does not run yet. Today's NRO
 > checks the console and your game's files, and writes a log.
 
 This repository has no game files and no game code. You need your own copy of Demon's Souls.
@@ -35,7 +35,8 @@ This repository has no game files and no game code. You need your own copy of De
 - About 8.5 GB free on the SD card (FAT32 or exFAT)
 
 On a PC: Python 3 and [devkitPro](https://devkitpro.org/wiki/Getting_Started) with `switch-dev`.
-Later stages also need your own [RPCS3](https://rpcs3.net), once, to decrypt the game's code.
+Later stages also need your own [RPCS3](https://rpcs3.net), once, to decrypt two files: the game's
+code (`EBOOT.BIN`) and `libsre.sprx` from PS3 firmware 4.93.
 
 ## Installing
 
@@ -46,14 +47,20 @@ Later stages also need your own [RPCS3](https://rpcs3.net), once, to decrypt the
    ```
 
    It checks that the disc is BLUS30443 1.00 and leaves out the disc's system update.
-2. Build the NRO (see [Building](#building)), then fill `SD_CARD/`:
+2. Put the game's script files where the port reads them (and, later, what RPCS3 decrypted):
+
+   ```bash
+   python tools/check_inputs.py [the folder RPCS3 wrote to]
+   ```
+
+3. Build the NRO (see [Building](#building)), then fill `SD_CARD/`:
 
    ```bash
    python tools/make_sd.py
    ```
 
-3. Copy what is inside `SD_CARD/` to the root of your SD card.
-4. Start **Demon's Souls** from the homebrew menu. For the full memory the game needs, start it
+4. Copy what is inside `SD_CARD/` to the root of your SD card.
+5. Start **Demon's Souls** from the homebrew menu. For the full memory the game needs, start it
    through a forwarder or with title takeover (hold **R** on a game), not from the album.
 
 ## Logs
@@ -77,6 +84,7 @@ Copy them to `SD_LOG/` in this repository to look at them. For a live log, start
 | Sources: Soulbrandt and ps3recomp, pinned, without keys | Done |
 | First-boot NRO (logs, memory check, game folder check) | Works on a console (firmware 22.5.0) |
 | The PS3's 4 GB address space on the Switch | Works on a console |
+| The game's files on the Switch (paths, inflating, SD card speed) | Built, **waiting on its console test** |
 | The game's code on ARM64 and Horizon | **To do** |
 | deko3D renderer | **To do** |
 | Online play (co-op, invasions, messages) | **To do** |

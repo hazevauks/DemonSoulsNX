@@ -23,18 +23,24 @@ set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
 add_compile_options(-Wall -Wextra -fno-omit-frame-pointer)
 
 # ---------------------------------------------------------------------------
-# Switch platform layer: logs, the console's memory, guest memory, the game's folder
+# Switch platform layer: logs, the console's memory, guest memory, the game's files
 # ---------------------------------------------------------------------------
 add_library(desnx_platform STATIC
 	src/platform/nx_data.c
 	src/platform/nx_guest.c
 	src/platform/nx_log.c
 	src/platform/nx_system.c
+	src/platform/nx_vfs.c
+	src/platform/nx_vfs_probe.c
 )
 target_include_directories(desnx_platform PUBLIC src)
+# ps3recomp's header-only checks on game paths (ps3emu/vfs_path.h)
+target_include_directories(desnx_platform PRIVATE third_party/ps3recomp/include)
+find_package(ZLIB REQUIRED)    # switch-zlib, from portlibs
+target_link_libraries(desnx_platform PUBLIC ZLIB::ZLIB)
 
 # ---------------------------------------------------------------------------
-# The NRO. Stage 1: the first boot, with no game code yet (docs/status.md).
+# The NRO. For now a test shell with no game code (docs/status.md).
 # ---------------------------------------------------------------------------
 # nx_guest_fault.s replaces libnx's exception entry, so it is linked as an object: from the
 # library, the linker would take libnx's own, which the start code asks for first.

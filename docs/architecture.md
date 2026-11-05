@@ -11,7 +11,8 @@ Horizon, and a native deko3D renderer in place of Direct3D 12 and Vulkan.
 ```
 your disc (.iso) ──tools/extract_game.py──> game_data/disc/ (PS3_GAME)
                                                │
-                        your RPCS3 decrypts ──>│ EBOOT.elf, *.sdat.unedat, libsre.sprx
+                        your RPCS3 decrypts ──>│ EBOOT.elf, libsre.prx
+               tools/check_inputs.py checks ──>│ them, and links the scripts' plain copies
                                                │
               ps3recomp (on the PC) lifts ───> work/recomp/  (437 MB of C++, never shared)
                                                │

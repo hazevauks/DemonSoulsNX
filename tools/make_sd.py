@@ -5,7 +5,9 @@
 
 The game's files are linked, not copied, when they are on the same drive, so the folder
 costs no extra space. The disc's EBOOT.BIN is left out: it is encrypted, and the console
-never runs it (the game's code is recompiled into the NRO).
+never runs it (the game's code is recompiled into the NRO). What tools/check_inputs.py put in
+place comes along: EBOOT.elf and the .sdat.unedat files inside the game's folder, and
+game_data/firmware/libsre.prx.
 """
 
 import argparse
@@ -37,6 +39,8 @@ def main():
     parser.add_argument("--nro", type=pathlib.Path, default=ROOT / "build" / "demonsouls.nro")
     parser.add_argument("--game", type=pathlib.Path, default=ROOT / "game_data" / "disc",
                         help="the folder tools/extract_game.py wrote")
+    parser.add_argument("--firmware", type=pathlib.Path, default=ROOT / "game_data" / "firmware",
+                        help="where tools/check_inputs.py put libsre.prx")
     parser.add_argument("--no-game", action="store_true", help="only put the NRO in place")
     args = parser.parse_args()
 
@@ -60,6 +64,13 @@ def main():
         total += 1
         placed += place(source, app / "game" / relative)
     print("game: %d files in %s (%d new or changed)" % (total, (APP / "game").as_posix(), placed))
+
+    libsre = args.firmware / "libsre.prx"
+    if libsre.is_file():
+        place(libsre, app / "firmware" / "libsre.prx")
+        print("firmware: %s" % (APP / "firmware" / "libsre.prx").as_posix())
+    else:
+        print("firmware: no libsre.prx yet (tools/check_inputs.py)")
     return 0
 
 

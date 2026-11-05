@@ -12,7 +12,10 @@ PC). Copy what is inside `SD_CARD/` to the root of the SD card:
 ```
 switch/demonsouls/
   demonsouls.nro   the port
-  game/            your disc's folder: PS3_DISC.SFB and PS3_GAME
+  game/            your disc's folder: PS3_DISC.SFB and PS3_GAME (the game's /dev_bdvd)
+  firmware/        libsre.prx, once you have decrypted it
+  hdd0/            the PS3's drive (/dev_hdd0): saves; made by the port
+  hdd1/            the game's cache (/dev_hdd1); made by the port
   SD_LOG/          the logs, written by the port
 ```
 
@@ -43,7 +46,7 @@ nxlink -s build/demonsouls.nro
 
 The log then goes to the PC and to the SD card at the same time.
 
-## What the stage 1 NRO shows
+## What the test NRO shows
 
 The launch mode, the memory the process gets, whether guest memory works, and whether the game's
 folder is found. The log adds the firmware version, the address space and its regions, and each
@@ -52,3 +55,8 @@ step of the guest memory test with its timing: stage 6 is built on these figures
 The guest memory test touches memory nothing has mapped yet, on purpose. If the log stops at
 `touching unmapped guest memory`, faults do not reach the NRO and the console shows an error; the
 log up to there is what is needed.
+
+Stage 2 adds the `files:` lines: the game's first files opened by the PS3's paths (one in the
+mixed case the game uses), three DCX files inflated, the SD card's speed for a long read, a seek
+and a small file, the game's way of writing its cache (in `hdd1/`, removed again), and which of the
+files decrypted on the PC are on the card. It reads about 80 MB and takes a few seconds.

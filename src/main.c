@@ -1,10 +1,11 @@
-/* main.c -- the first boot.
+/* main.c -- the test shell, until the game runs.
  *
- * Stage 1 of the port: this NRO has no game code yet. It checks what the later stages
- * depend on: that the NRO starts, that logs reach SD_LOG, that the game's folder is on the
- * SD card, how much memory and address space the console gives the process, and that the
- * PS3's 4 GB address space can be mapped in it (nx_guest.c). The recompiled game takes over
- * from here in a later stage (docs/status.md).
+ * This NRO has no game code yet. It checks what the later stages depend on, on the console:
+ * stage 1, that the NRO starts, that logs reach SD_LOG, how much memory the process gets, and
+ * that the PS3's 4 GB address space maps in it (nx_guest.c); stage 2, that the game's files
+ * open by the PS3's paths, inflate, read and write at a usable speed, and which of the files
+ * decrypted on the PC are there (nx_vfs_probe.c). The recompiled game takes over from here
+ * in a later stage (docs/status.md).
  */
 
 #include <stdio.h>
@@ -16,8 +17,9 @@
 #include "platform/nx_log.h"
 #include "platform/nx_paths.h"
 #include "platform/nx_system.h"
+#include "platform/nx_vfs.h"
 
-static void show(const NxSystem *system, const NxGuestProbe *guest, const NxData *data)
+static void show(const NxSystem *system, const NxGuestProbe *guest, const NxData *data, const NxVfsProbe *files)
 {
     printf("\x1b[1;1H\x1b[2J");
     printf("Demon's Souls for Nintendo Switch %s\n", DESNX_VERSION);
@@ -42,6 +44,15 @@ static void show(const NxSystem *system, const NxGuestProbe *guest, const NxData
     else
         printf("Game files:   %s %s, all %d folders found\n", data->title_id, data->version, data->folders_expected);
 
+    if (data->found && data->right_version) {
+        if (!files->failed)
+            printf("File layer:   works, %u MB/s, %u us a small file\n", files->read_mbps, files->small_file_us);
+        else
+            printf("File layer:   failed at %s, see the log\n", files->failed);
+        printf("Decrypted:    EBOOT.elf %s, scripts %u of %u, libsre.prx %s\n", files->eboot ? "yes" : "no",
+               files->scripts, files->scripts_expected, files->libsre ? "yes" : "no");
+    }
+
     printf("\nThe log is in " NX_LOG_DIR "/" NX_LOG_FILE "\n\n");
     printf("Press + to exit.\n");
     consoleUpdate(NULL);
@@ -53,6 +64,7 @@ int main(int argc, char **argv)
     (void)argv;
 
     nx_log_init(DESNX_VERSION);
+    nx_vfs_init();
     consoleInit(NULL);
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad;
@@ -69,7 +81,13 @@ int main(int argc, char **argv)
     nx_data_check(&data);
     nx_data_log(&data);
 
-    show(&system, &guest, &data);
+    printf("Checking the game's files...\n");
+    consoleUpdate(NULL);
+    NxVfsProbe files = {0};
+    if (data.found && data.right_version)
+        nx_vfs_probe(&files);
+
+    show(&system, &guest, &data, &files);
     while (appletMainLoop()) {
         padUpdate(&pad);
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus)
