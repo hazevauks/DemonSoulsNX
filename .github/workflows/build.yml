@@ -27,7 +27,8 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           python3 tools/check_repo.py
 
-      # pkg.devkitpro.org at times answers GitHub's runners with 403 for a minute or so: try again
+      # pkg.devkitpro.org at times answers GitHub's runners with 403, sometimes for minutes: try
+      # again, then build with the packages the image already has, once they are all there
       - name: Libraries
         run: |
           for try in 1 2 3 4; do
@@ -35,7 +36,8 @@ jobs:
             echo "::warning::the package server refused (try $try of 4), waiting"
             sleep 45
           done
-          exit 1
+          echo "::warning::the package server refused every try: building with the image's own packages"
+          dkp-pacman -Q devkitA64 libnx switch-tools deko3d uam switch-sdl2 switch-zlib
 
       - name: Build
         run: ./build.sh
