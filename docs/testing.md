@@ -45,6 +45,10 @@ The log then goes to the PC and to the SD card at the same time.
 
 ## What the stage 1 NRO shows
 
-The launch mode, the memory the process gets, whether guest memory can be mapped, and whether the
-game's folder is found. The log adds the firmware version, the alias region and the system resource
-budget: stage 6 is built on these figures.
+The launch mode, the memory the process gets, whether guest memory works, and whether the game's
+folder is found. The log adds the firmware version, the address space and its regions, and each
+step of the guest memory test with its timing: stage 6 is built on these figures.
+
+The guest memory test touches memory nothing has mapped yet, on purpose. If the log stops at
+`touching unmapped guest memory`, faults do not reach the NRO and the console shows an error; the
+log up to there is what is needed.

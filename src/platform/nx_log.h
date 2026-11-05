@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 /* Opens SD_LOG/demonsouls_log.txt (the last run's log becomes demonsouls_log_previous.txt)
- * and sends stdout and stderr there, or to nxlink when the NRO was started with nxlink -s. */
+ * and sends stderr there, or to nxlink when the NRO was started with nxlink -s. */
 void nx_log_init(const char *version);
 void nx_log_shutdown(void);
 

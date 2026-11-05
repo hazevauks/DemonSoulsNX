@@ -75,7 +75,8 @@ Copy them to `SD_LOG/` in this repository to look at them. For a live log, start
 | --- | --- |
 | Extraction from the disc, file layout | Works |
 | Sources: Soulbrandt and ps3recomp, pinned, without keys | Done |
-| First-boot NRO (logs, memory check, game folder check) | Builds, **not tested on a console yet** |
+| First-boot NRO (logs, memory check, game folder check) | Works on a console (firmware 22.5.0) |
+| The PS3's 4 GB address space on the Switch | A second way is built, **waiting on its console test** |
 | The game's code on ARM64 and Horizon | **To do** |
 | deko3D renderer | **To do** |
 | Online play (co-op, invasions, messages) | **To do** |

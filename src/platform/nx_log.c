@@ -29,14 +29,14 @@ void nx_log_init(const char *version)
         setvbuf(log_file, NULL, _IOLBF, 4096);
 
     if (__nxlink_host.s_addr != 0 && R_SUCCEEDED(socketInitializeDefault()))
-        nxlink_fd = nxlinkStdio();
+        nxlink_fd = nxlinkStdioForDebug();
 
-    /* Without nxlink, what the runtime and the libraries print goes to the log file too,
-     * through its descriptor: the SD card's file system lets a file be open for writing once. */
+    /* Without nxlink, what the libraries print to stderr goes to the log file too, through its
+     * descriptor: the SD card's file system lets a file be open for writing once. stdout stays
+     * on the screen: a descriptor moved onto the file no longer reaches libnx's console, which
+     * left the first build's screen black. The game, with no console, will move stdout too. */
     if (nxlink_fd < 0 && log_file) {
-        dup2(fileno(log_file), STDOUT_FILENO);
         dup2(fileno(log_file), STDERR_FILENO);
-        setvbuf(stdout, NULL, _IOLBF, 4096);
         setvbuf(stderr, NULL, _IONBF, 0);
     }
 
@@ -61,8 +61,8 @@ void nx_log_shutdown(void)
     }
 }
 
-/* Always to the file; with nxlink also to stderr, which stays on the socket when the
- * console's screen takes stdout. */
+/* Always to the file; with nxlink also to stderr, which goes to the socket while stdout
+ * stays on the screen. */
 static void write_line(const char *format, va_list args)
 {
     va_list copy;

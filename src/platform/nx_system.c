@@ -1,8 +1,9 @@
 /* nx_system.c -- what the console gives the port: firmware, launch mode, memory.
  *
- * The PS3 code runs in a 32-bit guest address space. The plan (docs/architecture.md) is to
- * reserve 4 GB of the alias region and map memory into it with svcMapPhysicalMemory, which
- * needs a system resource budget. The first boot logs whether this console allows it.
+ * The PS3 code runs in a 32-bit guest address space. The first plan was to map it into the
+ * alias region with svcMapPhysicalMemory, which needs a system resource budget; the first
+ * console test showed hbloader's process has none, and nx_guest.c maps it another way. The
+ * figures are still logged: a different loader may give them.
  */
 
 #include <switch.h>

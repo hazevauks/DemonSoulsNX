@@ -41,11 +41,20 @@ These decide whether the port works, and each has its own stage.
 
 1. **Guest memory.** The PS3 code uses 32-bit addresses into one 4 GB space: the game at
    0x00010000, user memory at 0x40000000 (the game asks for 164 MB of it, all at boot), the RSX's
-   memory at 0xC0000000, stacks above. ps3recomp adds a base pointer to every address. On the Switch
-   the plan is to reserve 4 GB of the process's alias region and map only the parts in use with
-   `svcMapPhysicalMemory`, which needs the process to have a system resource budget. Whether the
-   homebrew loader's process has one is not known yet: the stage 1 build logs it. Without it, the
-   fallback is a smaller window carved from the heap, with no guard pages.
+   memory at 0xC0000000, stacks above. ps3recomp adds a base pointer to every address, and turns
+   host pointers back into guest addresses by keeping their low 32 bits, so the base sits on a
+   4 GB boundary. Soulbrandt reserves the 4 GB on Windows and commits 64 KB wherever the game
+   first touches it.
+
+   The first plan was `svcMapPhysicalMemory` into the alias region. The first console test showed
+   it is not available: hbloader's process has no system resource, and its address space is
+   36-bit (alias region 6 GB). The way now built (`src/platform/nx_guest.c`) uses what hbloader
+   does give: the process's own handle. With it, `svcMapProcessCodeMemory` shows heap memory at
+   any free address of the code region, and `svcSetProcessMemoryPermission` makes it read/write.
+   The NRO keeps a free 4 GB window on a 4 GB boundary, maps heap memory where the game's memory
+   is, and answers a fault anywhere else in the window by mapping a 64 KB piece there
+   (`src/platform/nx_guest_fault.s` takes libnx's exception entry). The stage 1 NRO tests all
+   three on the console: 512 MB mapped whole, 512 pieces of 64 KB, and faults across the 4 GB.
 2. **Cores.** The PS3 runs the game on a two-thread PPU and six SPUs. The Switch gives a game three
    1 GHz Cortex-A57 cores (a fourth in part). The SPU programs become host tasks, and the game's
    own threads share the cores. Soulbrandt's notes show HighGraphics waiting in libsre's queue for

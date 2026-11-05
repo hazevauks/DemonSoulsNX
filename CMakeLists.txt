@@ -4,7 +4,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{DEVKITPRO})
 	set(CMAKE_TOOLCHAIN_FILE "$ENV{DEVKITPRO}/cmake/Switch.cmake")
 endif()
 
-project(DemonSoulsNX VERSION 0.0.1 LANGUAGES C CXX)
+project(DemonSoulsNX VERSION 0.0.1 LANGUAGES C CXX ASM)
 
 if(NOT NINTENDO_SWITCH)
 	message(FATAL_ERROR "DemonSoulsNX targets the Nintendo Switch: configure it with the devkitA64 toolchain.")
@@ -23,10 +23,11 @@ set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
 add_compile_options(-Wall -Wextra -fno-omit-frame-pointer)
 
 # ---------------------------------------------------------------------------
-# Switch platform layer: logs, the console's memory, the game's folder
+# Switch platform layer: logs, the console's memory, guest memory, the game's folder
 # ---------------------------------------------------------------------------
 add_library(desnx_platform STATIC
 	src/platform/nx_data.c
+	src/platform/nx_guest.c
 	src/platform/nx_log.c
 	src/platform/nx_system.c
 )
@@ -35,7 +36,9 @@ target_include_directories(desnx_platform PUBLIC src)
 # ---------------------------------------------------------------------------
 # The NRO. Stage 1: the first boot, with no game code yet (docs/status.md).
 # ---------------------------------------------------------------------------
-add_executable(demonsouls src/main.c)
+# nx_guest_fault.s replaces libnx's exception entry, so it is linked as an object: from the
+# library, the linker would take libnx's own, which the start code asks for first.
+add_executable(demonsouls src/main.c src/platform/nx_guest_fault.s)
 target_compile_definitions(demonsouls PRIVATE DESNX_VERSION="${PROJECT_VERSION}")
 target_link_libraries(demonsouls PRIVATE desnx_platform nx m)
 target_link_options(demonsouls PRIVATE -Wl,-Map=${CMAKE_BINARY_DIR}/demonsouls.map -Wl,--gc-sections)
