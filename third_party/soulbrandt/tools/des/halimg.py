@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""halimg.py <a> <b> [--mode exact|vk|hdr] [--tol N] [--out <dir>] [--quiet]
+halimg.py --selftest
+
+Compare two images, or two folders of same-named images (BMP or PNG, and the
+backend's HDRP snapshots: "HDRP <w> <h>" then RGBA16F pixels, RSX_HDR_SNAP),
+for the renderer gates (halgate.sh). In a folder every file is matched by its
+path under the folder, subfolders included; a file on one side only fails.
+
+  exact  the pixels are identical (every channel, alpha too). Reports how many
+         pixels differ. For a route that must be bit-identical (d3d12 against legacy).
+  vk     the rule for a route that may round differently (Vulkan), all three:
+           - at least 99.95% of pixels within +-tol/255 on every channel
+             (--tol, default 1; 2 for the D32S8 tests);
+           - no 16x16 block whose mean absolute difference (over its pixels
+             and channels, in 0-255 steps) is above 1.0; edge blocks are
+             averaged over the pixels they have;
+           - at most 0.01% of pixels more than 8/255 off on any channel.
+         An HDRP pair is held to the hdr rule instead, with outliers: a
+         channel outside it passes when it is within 8/255 of the other
+         (relative to the larger of 1 and its value), and at most 0.01% of
+         the pixels have such a channel: the same bound as the 8-bit rule's
+         spikes. These are pixels that sampled the next texel of an 8-bit
+         texture across an edge (seen: 25 pixels, up to 4.4/255).
+         With --hdr-white (the paper white, in the snapshot's units: nits /
+         80) an HDRP pair is turned back into the 8-bit codes the blit
+         decoded (--hdr-curve: gamma 2.2, or srgb for RSX_HDR_GAMMA=1) and
+         held to the 8-bit rule above instead. A texel's step grows with the
+         paper white: at 400 nits the bound above failed pixels one step of
+         a texture apart, which the frame's 8-bit shots pass (seen: 119
+         pixels, 1 to 5 codes). halgate.sh passes it from the replay's log.
+  hdr    HDRP pairs: every channel within 1e-3 of the other, relative to the
+         larger of 1 and its value (--hdr-tol), with no outliers. Other images
+         as vk.
+
+One line per image: its size, the pixels that differ, the share within
+tolerance, the worst block mean, the share over 8/255, the largest difference,
+and ok / FAIL. The last line is "halimg: images=N failed=M". With --out, a
+heat map per image that differs, <name>_heat.png: dark blue for 1, blue for
+up to the tolerance, red for more (brighter is larger), white above 8, and
+the failing 16x16 blocks outlined in yellow. --quiet prints the failures and
+the last line only.
+
+Exit status: 0 every image passes, 1 one fails or is missing, 2 bad arguments
+or an image that cannot be read.
+
+The images are game-derived: keep them, and the heat maps, outside the
+repository.
+"""
+import argparse
+import os
+import sys
+import tempfile
+
+import numpy as np
+from PIL import Image
+
+EXTS = ('.bmp', '.png', '.hdrp')
+BLOCK = 16
+HDR_OUTLIER_TOL = 8 / 255  # vk: an HDRP channel this far off (relative above 1) passes as an outlier
+HDR_OUTLIERS = 0.01       # vk: at most this share of the pixels, in percent
+
+
+class BadImage(Exception):
+    pass
+
+
+def load(path):
+    """An HxWxC array: uint8 for BMP/PNG (RGB or RGBA as stored), float32 for HDRP."""
+    if path.lower().endswith('.hdrp'):
+        with open(path, 'rb') as f:
+            head = f.readline().split()
+            if len(head) != 3 or head[0] != b'HDRP':
+                raise BadImage('%s: not an HDRP snapshot' % path)
+            w, h = int(head[1]), int(head[2])
+            raw = f.read()
+        if len(raw) != w * h * 8:
+            raise BadImage('%s: %d bytes of pixels, want %d' % (path, len(raw), w * h * 8))
+        return np.frombuffer(raw, dtype='<f2').reshape(h, w, 4).astype(np.float32)
+    try:
+        im = Image.open(path)
+        im.load()
+    except Exception as e:  # PIL raises several types
+        raise BadImage('%s: %s' % (path, e))
+    if im.mode not in ('RGB', 'RGBA'):
+        im = im.convert('RGBA' if 'A' in im.mode else 'RGB')
+    return np.asarray(im)
+
+
+def block_means(d):
+    """Mean of d (HxW, already averaged over channels) per 16x16 block."""
+    h, w = d.shape
+    ys, xs = np.arange(0, h, BLOCK), np.arange(0, w, BLOCK)
+    s = np.add.reduceat(np.add.reduceat(d, ys, axis=0), xs, axis=1)
+    ch = np.minimum(BLOCK, h - ys)[:, None]
+    cw = np.minimum(BLOCK, w - xs)[None, :]
+    return s / (ch * cw)
+
+
+def hdr_codes(v, white, curve):
+    """An HDRP's RGB as the 8-bit codes the blit decoded (RSX_HDR): v / white through the inverse of gamma 2.2,
+    or of the sRGB curve, times 255. Above white (the roll-off's highlights) the same curve goes on."""
+    x = np.maximum(v[:, :, :3], 0.0) / white
+    if curve == 'srgb':
+        c = np.where(x <= 0.0031308, x * 12.92, 1.055 * np.power(x, 1 / 2.4) - 0.055)
+    else:
+        c = np.power(x, 1 / 2.2)
+    return c * 255.0
+
+
+def rule8(r, d, mode, tol):
+    """The 8-bit measures of d (HxWxC steps of 1/255) into r, and 'ok' by the mode."""
+    dmax = d.max(axis=2)
+    n = dmax.size
+    r['differ'] = int((dmax > 0).sum())
+    r['max'] = int(dmax.max()) if n else 0
+    r['within'] = 100.0 * float((dmax <= tol).sum()) / n if n else 100.0
+    r['over8'] = 100.0 * float((dmax > 8).sum()) / n if n else 0.0
+    bm = block_means(d.mean(axis=2, dtype=np.float64)) if n else np.zeros((0, 0))
+    r['block'] = float(bm.max()) if bm.size else 0.0
+    r['bad_blocks'] = bm > 1.0
+    if mode == 'exact':
+        r['ok'] = r['differ'] == 0
+    else:
+        r['ok'] = r['within'] >= 99.95 and r['block'] <= 1.0 and r['over8'] <= 0.01
+    r['_d'] = dmax
+    return r
+
+
+def compare(a, b, mode, tol, hdr_tol, hdr_white=0.0, hdr_curve='gamma'):
+    """A dict with the measures and 'ok'. a and b have the same shape."""
+    r = {'size': '%dx%d' % (a.shape[1], a.shape[0])}
+    if a.dtype == np.float32:   # HDRP
+        diff = np.abs(a - b)
+        if mode == 'vk' and hdr_white > 0:   # in the codes the blit decoded, by the 8-bit rule
+            if np.isnan(a).any() or np.isnan(b).any():
+                r.update(differ=int((a != b).any(axis=2).sum()), max=float('nan'), ok=False)
+                return r
+            d = np.rint(np.abs(hdr_codes(a, hdr_white, hdr_curve) - hdr_codes(b, hdr_white, hdr_curve)))
+            return rule8(r, d.astype(np.int32), mode, tol)
+        r['differ'] = int((a != b).any(axis=2).sum())
+        r['max'] = float(diff.max()) if diff.size else 0.0
+        if mode == 'exact':
+            r['ok'] = r['differ'] == 0
+        else:
+            scale = np.maximum(1.0, np.maximum(np.abs(a), np.abs(b)))
+            over = diff > hdr_tol * scale
+            opix = over.any(axis=2)
+            r['within'] = 100.0 - 100.0 * float(opix.mean())
+            if mode == 'vk':
+                far = (diff > HDR_OUTLIER_TOL * scale) | np.isnan(diff)
+                r['ok'] = not far.any() and 100.0 - r['within'] <= HDR_OUTLIERS
+            else:
+                r['ok'] = not opix.any()
+        return r
+    return rule8(r, np.abs(a.astype(np.int16) - b.astype(np.int16)), mode, tol)
+
+
+def heat(r, path, tol):
+    d = r.get('_d')
+    if d is None:
+        return
+    h, w = d.shape
+    img = np.zeros((h, w, 3), np.uint8)
+    one = d == 1
+    small = (d > 1) & (d <= tol)
+    big = (d > tol) & (d <= 8)
+    huge = d > 8
+    img[one] = (0, 0, 110)
+    img[small] = (40, 40, 255)
+    img[big, 0] = np.clip(120 + d[big].astype(np.int32) * 16, 0, 255)
+    img[huge] = (255, 255, 255)
+    bb = r.get('bad_blocks')
+    if bb is not None:
+        for by, bx in zip(*np.nonzero(bb)):
+            y0, x0 = by * BLOCK, bx * BLOCK
+            y1, x1 = min(y0 + BLOCK, h) - 1, min(x0 + BLOCK, w) - 1
+            img[y0, x0:x1 + 1] = img[y1, x0:x1 + 1] = (255, 220, 0)
+            img[y0:y1 + 1, x0] = img[y0:y1 + 1, x1] = (255, 220, 0)
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    Image.fromarray(img).save(path)
+
+
+def listing(root):
+    out = []
+    for dp, _, files in os.walk(root):
+        for f in files:
+            if f.lower().endswith(EXTS):
+                out.append(os.path.relpath(os.path.join(dp, f), root).replace('\\', '/'))
+    return sorted(out)
+
+
+def line(name, r):
+    if r is None:
+        return '%-44s %s' % (name, 'MISSING')
+    if 'error' in r:
+        return '%-44s %s  FAIL' % (name, r['error'])
+    parts = ['%-44s %-10s differ %-8d' % (name, r['size'], r['differ'])]
+    if 'within' in r:
+        parts.append('within %8.4f%%' % r['within'])
+    if 'block' in r:
+        parts.append('block %6.3f' % r['block'])
+    if 'over8' in r:
+        parts.append('>8 %7.4f%%' % r['over8'])
+    parts.append(('max %g' % r['max']) if isinstance(r['max'], float) else ('max %3d' % r['max']))
+    parts.append('ok' if r['ok'] else 'FAIL')
+    return '  '.join(parts)
+
+
+def run(a, b, mode, tol, hdr_tol, out, quiet, show=print, hdr_white=0.0, hdr_curve='gamma'):
+    """Compare files or folders; returns the exit status."""
+    if os.path.isdir(a) != os.path.isdir(b):
+        show('halimg: %s and %s are not both folders or both files' % (a, b))
+        return 2
+    if os.path.isdir(a):
+        la, lb = listing(a), listing(b)
+        names = sorted(set(la) | set(lb))
+        pairs = [(n, os.path.join(a, n) if n in la else None, os.path.join(b, n) if n in lb else None)
+                 for n in names]
+    else:
+        for p in (a, b):
+            if not os.path.isfile(p):
+                show('halimg: no file %s' % p)
+                return 2
+        pairs = [(os.path.basename(a), a, b)]
+    if not pairs:
+        show('halimg: no images in %s' % a)
+        return 1
+    failed = 0
+    unreadable = 0
+    for n, pa, pb in pairs:
+        if pa is None or pb is None:
+            failed += 1
+            show(line(n + (' (only in b)' if pa is None else ' (only in a)'), None))
+            continue
+        try:
+            ia, ib = load(pa), load(pb)
+        except BadImage as e:
+            unreadable += 1
+            failed += 1
+            show(line(n, {'error': str(e)}))
+            continue
+        if ia.shape != ib.shape or ia.dtype != ib.dtype:
+            failed += 1
+            show(line(n, {'error': 'shape %s vs %s' % (ia.shape, ib.shape)}))
+            continue
+        r = compare(ia, ib, mode, tol, hdr_tol, hdr_white, hdr_curve)   # (an HDRP pair under vk: see the docstring)
+        if not r['ok']:
+            failed += 1
+        if not quiet or not r['ok']:
+            show(line(n, r))
+        if out and r['differ']:
+            heat(r, os.path.join(out, os.path.splitext(n)[0] + '_heat.png'), tol)
+    show('halimg: images=%d failed=%d mode=%s tol=%d' % (len(pairs), failed, mode, tol))
+    if unreadable:
+        return 2
+    return 1 if failed else 0
+
+
+def selftest():
+    """Synthetic pairs, each with the verdict every mode must give."""
+    rng = np.random.default_rng(1234)
+    base = rng.integers(16, 240, size=(720, 1280, 3), dtype=np.uint8)
+    n = base.shape[0] * base.shape[1]
+
+    def noisy(share, amp):
+        m = rng.random(base.shape[:2]) < share
+        s = rng.choice([-amp, amp], size=base.shape[:2])
+        out = base.astype(np.int16)
+        out[m] += s[m][:, None]
+        return np.clip(out, 0, 255).astype(np.uint8)
+
+    one = base.copy(); one[100, 200, 1] ^= 1                      # one pixel, one step
+    blk = base.astype(np.int16); blk[64:80, 64:80] += 2           # one 16x16 block, +2
+    blk = np.clip(blk, 0, 255).astype(np.uint8)
+    spike = base.copy()                                           # 4 pixels +80 in one block
+    for y, x in ((290, 290), (291, 295), (296, 292), (300, 301)):
+        spike[y, x] = (spike[y, x].astype(np.int16) + 80) % 256
+    spread = base.astype(np.int16)                                # 0.02% of pixels +20, one per block
+    k = int(n * 0.0002) + 1
+    ys = (np.arange(k) * 16) % 720 + 3
+    xs = ((np.arange(k) * 16) // 720) * 16 % 1280 + 5
+    spread[ys, xs, 2] += 20
+    spread = np.clip(spread, 0, 255).astype(np.uint8)
+    cases = [
+        # name, b image, tol, exact ok, vk ok
+        ('identical', base.copy(), 1, True, True),
+        ('one pixel off by 1', one, 1, False, True),
+        ('half the pixels +-1', noisy(0.5, 1), 1, False, True),
+        ('1% of pixels +-2, tol 1', noisy(0.01, 2), 1, False, False),
+        ('1% of pixels +-2, tol 2', noisy(0.01, 2), 2, False, True),
+        ('a 16x16 block +2, tol 2', blk, 2, False, False),
+        ('4 spikes in one block', spike, 1, False, False),
+        ('0.02% of pixels +20, spread', spread, 1, False, False),
+    ]
+    bad = 0
+
+    def check(what, got, want):
+        nonlocal bad
+        ok = got == want
+        bad += not ok
+        print('  %-48s %-5s %s' % (what, 'pass' if got else 'fail', 'ok' if ok else 'WRONG (want %s)' % want))
+
+    print('halimg self-test')
+    for name, b, tol, want_exact, want_vk in cases:
+        check(name + ' / exact', compare(base, b, 'exact', tol, 1e-3)['ok'], want_exact)
+        check(name + ' / vk', compare(base, b, 'vk', tol, 1e-3)['ok'], want_vk)
+    # The two rules the cases above isolate, checked by their measures.
+    r = compare(base, spike, 'vk', 1, 1e-3)
+    check('spikes: within and >8 pass, the block fails',
+          r['within'] >= 99.95 and r['over8'] <= 0.01 and r['block'] > 1.0, True)
+    r = compare(base, spread, 'vk', 1, 1e-3)
+    check('spread: within and block pass, >8 fails',
+          r['within'] >= 99.95 and r['block'] <= 1.0 and r['over8'] > 0.01, True)
+    r = compare(base, one, 'exact', 1, 1e-3)
+    check('one pixel off counts 1 differing pixel', r['differ'] == 1, True)
+    # Edge blocks: a 20x20 image has a 4-wide right and bottom edge.
+    e = np.zeros((20, 20, 3), np.uint8); f = e.copy(); f[17:20, 17:20] = 3
+    check('edge block averaged over its own pixels', abs(block_means(np.abs(
+        e.astype(np.int16) - f.astype(np.int16)).mean(axis=2))[1, 1] - 3 * 9 / 16) < 1e-9, True)
+    # HDRP outliers (vk only): a few pixels up to 8/255 off pass, more pixels or a bigger step fail.
+    h = (rng.random((720, 1280, 4)) * 3).astype(np.float16).astype(np.float32)
+    def hdr_off(k, d):
+        o = h.copy(); o.reshape(-1, 4)[np.arange(k) * 997, 1] += d
+        return o
+    check('hdrp: 16 pixels 2/255 off / vk', compare(h, hdr_off(16, 2 / 255), 'vk', 1, 1e-3)['ok'], True)
+    check('hdrp: 16 pixels 2/255 off / hdr', compare(h, hdr_off(16, 2 / 255), 'hdr', 1, 1e-3)['ok'], False)
+    check('hdrp: 200 pixels 2/255 off / vk', compare(h, hdr_off(200, 2 / 255), 'vk', 1, 1e-3)['ok'], False)
+    check('hdrp: one pixel 0.05 off / vk', compare(h, hdr_off(1, 0.05), 'vk', 1, 1e-3)['ok'], False)
+    # --hdr-white: the blit's own picture at 400 nits white (5.0), from 8-bit codes; pixels a texel's step apart.
+    def hdr_of(c, curve='gamma'):
+        x = c.astype(np.float64) / 255
+        x = np.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4) if curve == 'srgb' else x ** 2.2
+        o = np.ones(c.shape[:2] + (4,), np.float32)
+        o[:, :, :3] = 5.0 * x
+        return o.astype(np.float16).astype(np.float32)
+    def codes_off(k, step):
+        o = base.astype(np.int16); o.reshape(-1, 3)[np.arange(k) * 997, 1] += step
+        return np.clip(o, 0, 255).astype(np.uint8)
+    hw = hdr_of(base)
+    check('hdrp white 5: codes round trip (gamma)',
+          float(np.abs(hdr_codes(hw, 5.0, 'gamma') - base).max()) < 0.2, True)
+    check('hdrp white 5: codes round trip (srgb)',
+          float(np.abs(hdr_codes(hdr_of(base, 'srgb'), 5.0, 'srgb') - base).max()) < 0.2, True)
+    check('hdrp white 5: 120 pixels 4 codes off / vk, no white',
+          compare(hw, hdr_of(codes_off(120, 4)), 'vk', 1, 1e-3)['ok'], False)
+    check('hdrp white 5: 120 pixels 4 codes off / vk, white 5',
+          compare(hw, hdr_of(codes_off(120, 4)), 'vk', 1, 1e-3, 5.0)['ok'], True)
+    check('hdrp white 5: 0.06% of pixels 2 codes off / vk, white 5',
+          compare(hw, hdr_of(codes_off(int(n * 0.0006), 2)), 'vk', 1, 1e-3, 5.0)['ok'], False)
+    check('hdrp white 5: 0.02% of pixels 12 codes off / vk, white 5',
+          compare(hw, hdr_of(codes_off(int(n * 0.0002), 12)), 'vk', 1, 1e-3, 5.0)['ok'], False)
+    check('hdrp white 5: 120 pixels 4 codes off / hdr, white 5 (no codes there)',
+          compare(hw, hdr_of(codes_off(120, 4)), 'hdr', 1, 1e-3, 5.0)['ok'], False)
+    nan = hw.copy(); nan[5, 5, 0] = np.nan
+    check('hdrp white 5: a NaN fails', compare(hw, nan, 'vk', 1, 1e-3, 5.0)['ok'], False)
+
+    with tempfile.TemporaryDirectory(prefix='halimg') as t:
+        da, db, ho = os.path.join(t, 'a'), os.path.join(t, 'b'), os.path.join(t, 'heat')
+        for d in (da, db):
+            os.makedirs(os.path.join(d, 'sub'))
+        Image.fromarray(base).save(os.path.join(da, 'frame_000.bmp'))
+        Image.fromarray(base).save(os.path.join(db, 'frame_000.bmp'))
+        Image.fromarray(base[:64, :64]).save(os.path.join(da, 'sub', 'rt.bmp'))
+        Image.fromarray(noisy(0.5, 1)[:64, :64]).save(os.path.join(db, 'sub', 'rt.bmp'))
+        hd = (np.linspace(0, 4, 32 * 8 * 4).reshape(8, 32, 4)).astype('<f2')
+        for d, v in ((da, hd), (db, (hd.astype(np.float32) * (1 + 4e-4)).astype('<f2'))):
+            with open(os.path.join(d, 'hdr.hdrp'), 'wb') as f:
+                f.write(b'HDRP 32 8\n'); f.write(v.tobytes())
+        quiet = lambda *_: None
+        check('folders: bmp round trip, exact fails on sub/rt.bmp',
+              run(da, db, 'exact', 1, 1e-3, None, True, quiet) == 1, True)
+        check('folders: vk passes (hdrp within 1e-3)', run(da, db, 'vk', 1, 1e-3, ho, True, quiet) == 0, True)
+        check('heat map written for sub/rt.bmp', os.path.isfile(os.path.join(ho, 'sub', 'rt_heat.png')), True)
+        check('hdrp: a relative 4e-4 fails at 1e-4',
+              run(da, db, 'hdr', 1, 1e-4, None, True, quiet) == 1, True)
+        os.remove(os.path.join(db, 'frame_000.bmp'))
+        check('folders: a file on one side only fails', run(da, db, 'vk', 1, 1e-3, None, True, quiet) == 1, True)
+        Image.fromarray(base[:100]).save(os.path.join(db, 'frame_000.bmp'))
+        check('folders: a size change fails', run(da, db, 'vk', 1, 1e-3, None, True, quiet) == 1, True)
+        with open(os.path.join(db, 'frame_000.bmp'), 'wb') as f:
+            f.write(b'not an image')
+        check('an unreadable image gives status 2', run(da, db, 'vk', 1, 1e-3, None, True, quiet) == 2, True)
+    print('halimg self-test: %s' % ('passed' if not bad else '%d WRONG' % bad))
+    return 1 if bad else 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description='Compare images for the renderer gates (see the docstring).')
+    ap.add_argument('a', nargs='?')
+    ap.add_argument('b', nargs='?')
+    ap.add_argument('--mode', choices=('exact', 'vk', 'hdr'), default='exact')
+    ap.add_argument('--tol', type=int, default=1, help='vk: steps of 1/255 a pixel may be off (default 1)')
+    ap.add_argument('--hdr-tol', type=float, default=1e-3, help='HDRP: relative tolerance (default 1e-3)')
+    ap.add_argument('--hdr-white', type=float, default=0.0,
+                    help='vk: the HDRP pair\'s paper white in its units (nits / 80); compares in 8-bit codes')
+    ap.add_argument('--hdr-curve', choices=('gamma', 'srgb'), default='gamma',
+                    help='with --hdr-white: the blit\'s decode, gamma 2.2 or the sRGB curve (RSX_HDR_GAMMA=1)')
+    ap.add_argument('--out', help='folder for heat maps')
+    ap.add_argument('--quiet', action='store_true', help='print failures and the summary only')
+    ap.add_argument('--selftest', action='store_true')
+    o = ap.parse_args()
+    if o.selftest:
+        return selftest()
+    if not o.a or not o.b:
+        ap.print_usage()
+        return 2
+    return run(o.a, o.b, o.mode, o.tol, o.hdr_tol, o.out, o.quiet, hdr_white=o.hdr_white, hdr_curve=o.hdr_curve)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

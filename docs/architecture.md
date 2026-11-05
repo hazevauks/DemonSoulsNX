@@ -1,0 +1,75 @@
+# How the port is put together
+
+Demon's Souls has no source code. [Soulbrandt](https://github.com/JonathanDC64/Soulbrandt) turns
+the game's own PS3 code into C with [ps3recomp](https://github.com/JonathanDC64/ps3recomp), a
+static recompiler, and runs it on PC against a rewrite of the PS3's system libraries. DemonSoulsNX
+takes the same code to the Switch: the recompiled game, ps3recomp's runtime built for ARM64 and
+Horizon, and a native deko3D renderer in place of Direct3D 12 and Vulkan.
+
+## From your disc to the NRO
+
+```
+your disc (.iso) ──tools/extract_game.py──> game_data/disc/ (PS3_GAME)
+                                               │
+                        your RPCS3 decrypts ──>│ EBOOT.elf, *.sdat.unedat, libsre.sprx
+                                               │
+              ps3recomp (on the PC) lifts ───> work/recomp/  (437 MB of C++, never shared)
+                                               │
+       devkitA64 compiles, with the runtime ──>│ demonsouls.nro (holds code made from your game)
+                                               │
+                     tools/make_sd.py ──────── SD_CARD/switch/demonsouls/
+```
+
+Because the NRO holds code made from the game, it can never be published or shared, not even in
+this private repository's releases. Releases can only hold the tools and the runtime; the game is
+built on your PC from your copy, as Soulbrandt does.
+
+## What goes where
+
+| Part | Source | On the Switch |
+| --- | --- | --- |
+| The game's PPU code | lifted from `EBOOT.elf` by ps3recomp | compiled by devkitA64; big-endian loads and stores, AltiVec through sse2neon |
+| The game's SPU programs (decompression, skinning, culling) | lifted by ps3recomp from the EBOOT | run on host threads, SPURS through ps3recomp's HLE |
+| PS3 system libraries (cellFs, cellGcm, cellPad, cellAudio, SPURS, sysutil, network) | ps3recomp's runtime | the same code, with a Horizon platform layer under it |
+| The RSX (the PS3's GPU) | ps3recomp's RSX layer: it reads the game's command buffer | a deko3D backend; RSX programs translated to GLSL and compiled with `uam` |
+| Game-specific fixes (timing, HUD, heap, routes) | Soulbrandt's `port/` | kept, minus what is PC-only (the launcher, D3D UI, mouse) |
+| Logs, crash reports, memory, threads | `src/platform/` | ours |
+
+## The hard parts
+
+These decide whether the port works, and each has its own stage.
+
+1. **Guest memory.** The PS3 code uses 32-bit addresses into one 4 GB space: the game at
+   0x00010000, user memory at 0x40000000 (the game asks for 164 MB of it, all at boot), the RSX's
+   memory at 0xC0000000, stacks above. ps3recomp adds a base pointer to every address. On the Switch
+   the plan is to reserve 4 GB of the process's alias region and map only the parts in use with
+   `svcMapPhysicalMemory`, which needs the process to have a system resource budget. Whether the
+   homebrew loader's process has one is not known yet: the stage 1 build logs it. Without it, the
+   fallback is a smaller window carved from the heap, with no guard pages.
+2. **Cores.** The PS3 runs the game on a two-thread PPU and six SPUs. The Switch gives a game three
+   1 GHz Cortex-A57 cores (a fourth in part). The SPU programs become host tasks, and the game's
+   own threads share the cores. Soulbrandt's notes show HighGraphics waiting in libsre's queue for
+   73-75% of its time, so the threads' waits matter more than raw speed.
+3. **Size of the code.** The lift is 437 MB of C++ in 94,017 functions (Soulbrandt's docs/53), and
+   its Windows build has 272 MB of machine code, of which only about 12 MB is hot. An NRO of that
+   size fits in the 3.2 GB an application gets, but it is loaded whole, and the build takes hours.
+4. **The renderer.** Soulbrandt draws through Direct3D 12 or Vulkan from shaders it translates from
+   the RSX's programs to HLSL. The Switch needs the same programs as GLSL for `uam`, compiled ahead of
+   time on the PC from the programs the game uses, and a deko3D backend for ps3recomp's RSX layer.
+5. **30 fps at 1020/460/1331 MHz.** Not known yet. Recompiled code pays for byte swaps and the
+   PS3's calling conventions; the Cortex-A57 is slower than the PCs Soulbrandt is tested on. The
+   game ran at 30 fps on a 3.2 GHz in-order PPU, which helps: much of the work was on the SPUs.
+6. **Online play.** Soulbrandt has its own server. The Switch can reach it through the same
+   network layer once the rest works; it is the last stage.
+
+## The repository
+
+| Folder | What |
+| --- | --- |
+| `src/` | our own code: the Switch platform layer and, for now, the first-boot NRO |
+| `third_party/ps3recomp/` | the recompiler and runtime, as Soulbrandt pins it, without its keys (third_party/README.md) |
+| `third_party/soulbrandt/` | the PC port: lift scripts, game-specific code, documentation |
+| `tools/` | extraction, checks, the SD card |
+| `docs/` | how it works and what is tested |
+| `SD_CARD/`, `SD_LOG/` | the test build to copy, and the logs copied back (filled locally, not in git) |
+| `game_data/`, `work/` | your game and what is made from it (not in git) |

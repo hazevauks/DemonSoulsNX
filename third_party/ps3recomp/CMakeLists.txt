@@ -1,0 +1,1041 @@
+cmake_minimum_required(VERSION 3.20)
+# Keep in step with the changelog in README.md. This sat at 0.3.0 until August
+# 2026 while the project shipped 0.6.x through 0.8.0, so every build printed
+# "ps3recomp runtime v0.3.0" and was believed. v0.9.0 is the first TAGGED one.
+project(ps3recomp_runtime
+    VERSION 0.11.0
+    LANGUAGES C CXX
+    DESCRIPTION "ps3recomp - Static recompilation runtime for PS3 games"
+)
+
+# ---------------------------------------------------------------------------
+# Standards
+# ---------------------------------------------------------------------------
+set(CMAKE_C_STANDARD 17)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ---------------------------------------------------------------------------
+# Options
+# ---------------------------------------------------------------------------
+option(PS3RECOMP_BUILD_TESTS "Build unit tests" OFF)
+
+# The static Visual C++ runtime (/MT) for every target here, in place of the DLL one
+# (/MD), for a host exe linked with the "hybrid" CRT: the Visual C++ runtime and the
+# C++ library linked into the exe, and the C library taken from the UCRT that
+# Windows 10 and 11 include (ucrt.lib in place of libucrt.lib, at the exe's link).
+# Such an exe cannot link this library's C++ objects if they were built /MD (the
+# STL's RuntimeLibrary check), so the library has to match it. Off: /MD, as before.
+option(PS3RECOMP_STATIC_CRT "Build with the static Visual C++ runtime (/MT), for a hybrid-CRT host exe" OFF)
+if(PS3RECOMP_STATIC_CRT)
+    if(NOT MSVC)
+        message(FATAL_ERROR "PS3RECOMP_STATIC_CRT is for clang-cl on Windows")
+    endif()
+    # cmake_minimum_required(3.20) sets CMP0091 to NEW, so this is the
+    # MSVC_RUNTIME_LIBRARY of every target made after it.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
+# The SPU local-store debug probes (SPU_LS_WATCH, SPU_LS_LOWREAD, SPU_SMC_WATCH,
+# SPU_WWS_PROBE; runtime/spu/spu_context.h). Their gate is a test and a cold call at
+# every local-store access, so they are built only on request. A game that builds its
+# lifted SPU sources itself defines SPU_LS_PROBES=1 for them too.
+option(PS3RECOMP_SPU_LS_PROBES "Build the SPU local-store debug probes (SPU_LS_WATCH and others)" OFF)
+if(PS3RECOMP_SPU_LS_PROBES)
+    add_compile_definitions(SPU_LS_PROBES=1)
+endif()
+
+# The portable renderer: a GPU layer (libs/video/gpu) with D3D12 and Vulkan
+# backends, beside today's D3D12 renderer, which stays as it is and stays the
+# default. Off: nothing of it is built and every other object is the same as
+# without the option. On: see "Portable renderer" below.
+option(PS3RECOMP_RSX_HAL "Build the portable renderer (libs/video/gpu) beside today's D3D12 renderer" OFF)
+
+# ---------------------------------------------------------------------------
+# Collect source files
+# ---------------------------------------------------------------------------
+
+# HLE library sources
+file(GLOB_RECURSE HLE_SOURCES CONFIGURE_DEPENDS
+    "libs/system/*.c"
+    "libs/filesystem/*.c"
+    "libs/input/*.c"
+    "libs/audio/*.c"
+    "libs/video/*.c"
+    "libs/network/*.c"
+    "libs/spurs/*.c"
+    "libs/sync/*.c"
+    "libs/codec/*.c"
+    "libs/font/*.c"
+    "libs/misc/*.c"
+    "libs/hardware/*.c"
+    "runtime/diag/*.c"      # yz_frontier_trace, used by the live draw engine
+)
+# Exclude test harnesses (e.g. libs/video/tests/*): they define their own main().
+list(FILTER HLE_SOURCES EXCLUDE REGEX "/tests/")
+# Exclude sceNpCommerce.c: it is a pure duplicate of sceNpCommerce2.c (defines the
+# same sceNpCommerce2* symbols, no v1 API of its own). MSVC lib only warned
+# (LNK4006) but lld-link errors on the duplicate symbols when linking an exe.
+list(FILTER HLE_SOURCES EXCLUDE REGEX "/sceNpCommerce\\.c$")
+
+# The Vulkan RSX backend is opt-in while it grows (stage V0: clear + present).
+# It loads libvulkan at run time, so building needs only the Vulkan headers --
+# no target-architecture libvulkan, which keeps cross-compiling simple.
+option(PS3RECOMP_RSX_VULKAN "Build the Vulkan RSX backend (Linux)" OFF)
+list(FILTER HLE_SOURCES EXCLUDE REGEX "rsx_vulkan_backend\\.c$")
+if(PS3RECOMP_RSX_VULKAN)
+    if(WIN32 OR APPLE)
+        message(FATAL_ERROR "PS3RECOMP_RSX_VULKAN is Linux-only for now")
+    endif()
+    find_path(PS3RECOMP_VULKAN_INCLUDE_DIR vulkan/vulkan.h)
+    if(NOT PS3RECOMP_VULKAN_INCLUDE_DIR)
+        message(FATAL_ERROR "Vulkan headers not found. Debian/Ubuntu: "
+            "libvulkan-dev, Fedora: vulkan-headers -- or pass "
+            "-DPS3RECOMP_VULKAN_INCLUDE_DIR=<dir containing vulkan/vulkan.h>")
+    endif()
+    list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_vulkan_backend.c")
+    # HLSL -> SPIR-V for guest programs: a stub unless glslang is found below.
+    list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_shader_spirv.cpp")
+endif()
+
+# The Metal backend is Objective-C and Apple-only, so it is added explicitly
+# rather than globbed. It needs no platform #ifdef of its own as a result.
+if(APPLE)
+    enable_language(OBJC)
+    list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_metal_backend.m")
+endif()
+# The HLSL -> MSL translator is C++ (it drives glslang's C++ API) and compiles
+# to a stub wherever the shader tools are absent, so it is part of the
+# library everywhere. See the "Guest shaders on Metal" section below.
+list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_shader_msl.cpp")
+# cellSail's movie playback (Media Foundation on Windows, a stub elsewhere).
+list(APPEND HLE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/codec/sail_movie.cpp")
+# cellAtrac decodes with FFmpeg's ATRAC3plus decoder as extracted by PPSSPP
+# (LGPL-2.1, kept separate in third_party/at3_standalone -- see its README).
+file(GLOB AT3_SOURCES CONFIGURE_DEPENDS "third_party/at3_standalone/*.cpp")
+set_source_files_properties(${AT3_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")  # upstream code
+list(APPEND HLE_SOURCES ${AT3_SOURCES})
+# Ed25519 for the network sign-in (libs/network/ps3_net_signin.c): Monocypher,
+# BSD-2-Clause or CC0 (third_party/monocypher -- see its README).
+file(GLOB MONOCYPHER_SOURCES CONFIGURE_DEPENDS "third_party/monocypher/*.c")
+set_source_files_properties(${MONOCYPHER_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")  # upstream code
+list(APPEND HLE_SOURCES ${MONOCYPHER_SOURCES})
+# TLS on the links to the online server (libs/network/ps3_tls.c): mbedTLS 3.6
+# LTS with its default configuration, Apache-2.0 (third_party/mbedtls -- see
+# its README.txt).
+file(GLOB MBEDTLS_SOURCES CONFIGURE_DEPENDS "third_party/mbedtls/library/*.c")
+set_source_files_properties(${MBEDTLS_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")  # upstream code
+list(APPEND HLE_SOURCES ${MBEDTLS_SOURCES})
+
+# Runtime core (syscalls, PPU, SPU, memory)
+file(GLOB_RECURSE RUNTIME_SOURCES CONFIGURE_DEPENDS
+    "runtime/*.c"
+    "runtime/*.cpp"
+)
+# Exclude:
+#  - test harnesses (runtime/*/tests/*): they have their own main() and #include
+#    per-game generated headers (spu_recomp.h) that a plain library build lacks.
+#  - the PPU boot scaffold (runtime/ppu/, runtime/host/): these are compiled
+#    per-game against the fixed part of the lifter's header (ps3emu/ppu_lift.h)
+#    and the game's RSX/D3D12 backend, not as part of the game-agnostic runtime
+#    library. See docs/PPU_RECOMP.md.
+#  - spu_dispatch_mt.c: the musttail SPU indirect-branch fast path. It uses
+#    __attribute__((musttail)), which MSVC cannot parse, and it must be compiled
+#    *inside the game build* by clang so the tail call is guaranteed -- a plain
+#    call leaks one resolver frame per guest loop iteration. A port adds it to
+#    its own target; see templates/project/CMakeLists.txt.
+list(FILTER RUNTIME_SOURCES EXCLUDE REGEX "/tests/|/runtime/ppu/|/runtime/host/|/spu_dispatch_mt\.c$")
+
+# ---------------------------------------------------------------------------
+# Static library
+# ---------------------------------------------------------------------------
+add_library(ps3recomp_runtime STATIC
+    ${HLE_SOURCES}
+    ${RUNTIME_SOURCES}
+)
+
+target_include_directories(ps3recomp_runtime PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+
+# HLE modules include their own headers
+target_include_directories(ps3recomp_runtime PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/system"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/filesystem"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/input"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/audio"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/video"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/network"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/spurs"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/sync"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/codec"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/font"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/misc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime/spu"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+
+# Platform-specific link libraries
+if(WIN32)
+    target_link_libraries(ps3recomp_runtime PRIVATE
+        ws2_32      # Winsock for network modules
+        xinput      # XInput for gamepad
+        ole32       # COM for WASAPI audio
+        bcrypt      # BCryptGenRandom for SSL RNG
+        user32 gdi32  # cellOskDialog's host text-input window
+    )
+else()
+    # cellPad and cellAudio select their SDL2 backends unconditionally off
+    # Windows (see PAD_BACKEND_SDL2 / AUDIO_BACKEND_SDL2), so SDL2 is required
+    # here -- docs/BUILDING.md already lists it as the Linux/macOS dependency.
+    find_package(SDL2 QUIET)
+    if(SDL2_FOUND)
+        if(TARGET SDL2::SDL2)
+            target_link_libraries(ps3recomp_runtime PRIVATE SDL2::SDL2)
+        else()
+            target_include_directories(ps3recomp_runtime PRIVATE ${SDL2_INCLUDE_DIRS})
+            target_link_libraries(ps3recomp_runtime PRIVATE ${SDL2_LIBRARIES})
+        endif()
+        message(STATUS "  SDL2:         found (input + audio backends enabled)")
+    else()
+        message(FATAL_ERROR
+            "SDL2 not found. It provides the cellPad and cellAudio backends on "
+            "non-Windows hosts.\n"
+            "  macOS:  brew install sdl2\n"
+            "  Debian: apt install libsdl2-dev\n"
+            "If SDL2 is installed in a non-standard prefix, pass "
+            "-DCMAKE_PREFIX_PATH=<prefix>.")
+    endif()
+
+    find_package(Threads REQUIRED)
+    target_link_libraries(ps3recomp_runtime PRIVATE Threads::Threads)
+endif()
+
+if(APPLE)
+    target_link_libraries(ps3recomp_runtime PUBLIC
+        "-framework Metal"
+        "-framework QuartzCore"
+        "-framework Foundation"
+        "-framework AppKit"
+    )
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_metal_backend.m"
+        PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    message(STATUS "  Metal:        RSX backend enabled (rsx_metal_backend.m)")
+endif()
+
+# The D3D12 RSX backend off Windows: the same rsx_d3d12_backend.c on vkd3d
+# (Wine's D3D12 on Vulkan) in an SDL window, with the DXGI it uses supplied by
+# rsx_vkd3d_dxgi.c (see libs/video/rsx_vkd3d_host.h). vkd3d is found through
+# pkg-config (libvkd3d, libvkd3d-utils); the Vulkan headers come with it.
+option(PS3RECOMP_RSX_D3D12_VKD3D "Build the D3D12 RSX backend on vkd3d (Linux)" OFF)
+if(PS3RECOMP_RSX_D3D12_VKD3D)
+    if(WIN32 OR APPLE)
+        message(FATAL_ERROR "PS3RECOMP_RSX_D3D12_VKD3D is for Linux (Windows has D3D12 itself)")
+    endif()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PS3RECOMP_VKD3D REQUIRED IMPORTED_TARGET libvkd3d libvkd3d-utils)
+    # PUBLIC: the boot harness selects its backend on this definition.
+    target_compile_definitions(ps3recomp_runtime PUBLIC PS3RECOMP_RSX_D3D12_VKD3D)
+    target_link_libraries(ps3recomp_runtime PUBLIC PkgConfig::PS3RECOMP_VKD3D)
+    message(STATUS "  D3D12:        RSX backend on vkd3d ${PS3RECOMP_VKD3D_libvkd3d_VERSION}")
+endif()
+
+if(PS3RECOMP_RSX_VULKAN)
+    target_include_directories(ps3recomp_runtime PRIVATE "${PS3RECOMP_VULKAN_INCLUDE_DIR}")
+    # PUBLIC: ps3recomp_host selects its backend on this definition.
+    target_compile_definitions(ps3recomp_runtime PUBLIC PS3RECOMP_RSX_VULKAN)
+    target_link_libraries(ps3recomp_runtime PUBLIC ${CMAKE_DL_LIBS})
+    message(STATUS "  Vulkan:       RSX backend enabled (rsx_vulkan_backend.c, headers in ${PS3RECOMP_VULKAN_INCLUDE_DIR})")
+endif()
+
+# cellVdec decodes H.264 / MPEG-2 through FFmpeg when this is on, and off
+# Windows cellSail's movies decode their MPEG-2 video through it (Windows uses
+# Media Foundation; libs/codec/sail_movie.cpp). libavcodec
+# is loaded at run time (dlopen / LoadLibrary), never linked, so building needs
+# only the FFmpeg headers, and a binary run where FFmpeg is absent -- or with
+# PS3RECOMP_FFMPEG=0 -- keeps the callback-only decoders. FFmpeg stays a
+# separate, user-supplied LGPL library. See libs/codec/ffmpeg_runtime.h.
+option(PS3RECOMP_FFMPEG_RUNTIME "Decode media through FFmpeg loaded at run time (needs the FFmpeg headers)" OFF)
+# On Windows, with the option off, the pinned FFmpeg download turns it on (cmake/ffmpeg_download.cmake): its
+# headers for the build, its DLLs in <build>/ffmpeg-win64/bin for the game to put beside its executable.
+if(WIN32 AND NOT PS3RECOMP_FFMPEG_RUNTIME)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ffmpeg_download.cmake")
+    if(PS3RECOMP_FFMPEG_DOWNLOAD)
+        ps3recomp_ffmpeg_download(_ps3_ff_include _ps3_ff_bin)
+        if(_ps3_ff_include)
+            set(PS3RECOMP_FFMPEG_RUNTIME ON)
+            set(PS3RECOMP_FFMPEG_INCLUDE_DIR "${_ps3_ff_include}")
+            message(STATUS "  FFmpeg:       downloaded; its DLLs are in ${_ps3_ff_bin}")
+        endif()
+    endif()
+endif()
+if(PS3RECOMP_FFMPEG_RUNTIME)
+    if(NOT PS3RECOMP_FFMPEG_INCLUDE_DIR)
+        find_path(PS3RECOMP_FFMPEG_INCLUDE_DIR libavcodec/avcodec.h)
+    endif()
+    if(NOT PS3RECOMP_FFMPEG_INCLUDE_DIR)
+        message(FATAL_ERROR "FFmpeg headers not found. Debian/Ubuntu: "
+            "libavcodec-dev, Fedora: ffmpeg-free-devel, MSYS2: mingw-w64-x86_64-ffmpeg "
+            "-- or pass -DPS3RECOMP_FFMPEG_INCLUDE_DIR=<dir containing libavcodec/avcodec.h>")
+    endif()
+    target_include_directories(ps3recomp_runtime PRIVATE "${PS3RECOMP_FFMPEG_INCLUDE_DIR}")
+    target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_FFMPEG_RUNTIME)
+    target_link_libraries(ps3recomp_runtime PUBLIC ${CMAKE_DL_LIBS})
+    message(STATUS "  FFmpeg:       run-time loaded (headers in ${PS3RECOMP_FFMPEG_INCLUDE_DIR})")
+endif()
+
+# ---------------------------------------------------------------------------
+# Guest shaders on Metal: HLSL -> SPIR-V -> MSL
+# ---------------------------------------------------------------------------
+# The RSX decompilers emit HLSL for the D3D12 backend. Metal cannot compile
+# that, so libs/video/rsx_shader_msl.cpp lowers it with glslang (HLSL ->
+# SPIR-V) and spirv-cross (SPIR-V -> MSL). Both are optional: without them the
+# module compiles to a stub, rsx_hlsl_to_msl_available() says so, and the
+# Metal backend stays on its fixed-function path. The translation has no GPU
+# in it, so it is built and tested on Linux as well -- that is where the
+# decompilers' HLSL meets glslang's front end on every push.
+#
+#   macOS:  brew install glslang spirv-cross
+#   Debian: apt install glslang-dev glslang-tools spirv-tools \
+#                       libspirv-cross-c-shared-dev
+#           (glslang-tools only because the packaged CMake config declares
+#           the standalone binary as an imported target and fails to load
+#           without it)
+set(PS3RECOMP_MSL_TRANSLATION OFF)
+if(UNIX)
+    find_package(glslang CONFIG QUIET)
+
+    # spirv-cross's C API. Debian ships it as a shared library and Homebrew as
+    # a static one, under different pkg-config names -- and pkg-config itself
+    # is not a given on a Mac, so fall back to a plain header + library search.
+    set(SPVC_OK OFF)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(SPVC QUIET spirv-cross-c-shared)
+        if(NOT SPVC_FOUND)
+            pkg_check_modules(SPVC QUIET spirv-cross-c)
+        endif()
+        if(SPVC_FOUND)
+            set(SPVC_INC     ${SPVC_INCLUDE_DIRS})
+            set(SPVC_LIBS    ${SPVC_LINK_LIBRARIES})
+            set(SPVC_LIBDIRS ${SPVC_LIBRARY_DIRS})
+            set(SPVC_OK ON)
+        endif()
+    endif()
+    if(NOT SPVC_OK)
+        find_path(SPVC_INC_DIR spirv_cross_c.h PATH_SUFFIXES spirv_cross)
+        find_library(SPVC_LIB NAMES spirv-cross-c-shared spirv-cross-c)
+        if(SPVC_INC_DIR AND SPVC_LIB)
+            set(SPVC_INC  ${SPVC_INC_DIR})
+            set(SPVC_LIBS ${SPVC_LIB})
+            get_filename_component(SPVC_LIBDIRS "${SPVC_LIB}" DIRECTORY)
+            set(SPVC_OK ON)
+        endif()
+    endif()
+
+    if(glslang_FOUND AND SPVC_OK
+       AND TARGET glslang::glslang AND TARGET glslang::SPIRV)
+        add_library(ps3recomp_msl_translation INTERFACE)
+        target_compile_definitions(ps3recomp_msl_translation INTERFACE
+            PS3RECOMP_HAVE_MSL_TRANSLATION=1)
+        target_include_directories(ps3recomp_msl_translation INTERFACE ${SPVC_INC})
+        target_link_libraries(ps3recomp_msl_translation INTERFACE
+            glslang::glslang glslang::SPIRV ${SPVC_LIBS})
+        if(TARGET glslang::glslang-default-resource-limits)
+            target_link_libraries(ps3recomp_msl_translation INTERFACE
+                glslang::glslang-default-resource-limits)
+        endif()
+        # A static spirv-cross C API (Homebrew's) needs the backends it was
+        # built from, and neither pkg-config nor the library name says so:
+        # pick up the static siblings next to it. The shared one carries
+        # its own.
+        if(SPVC_LIBS MATCHES "\\.a$")
+            foreach(part msl glsl hlsl cpp reflect util core)
+                find_library(SPVC_PART_${part} NAMES spirv-cross-${part}
+                    HINTS ${SPVC_LIBDIRS} NO_DEFAULT_PATH)
+                if(SPVC_PART_${part})
+                    target_link_libraries(ps3recomp_msl_translation INTERFACE
+                        ${SPVC_PART_${part}})
+                endif()
+            endforeach()
+        endif()
+        target_link_libraries(ps3recomp_runtime PRIVATE ps3recomp_msl_translation)
+        set(PS3RECOMP_MSL_TRANSLATION ON)
+        message(STATUS "  Shaders:      guest programs translated to MSL (glslang ${glslang_VERSION}, ${SPVC_LIBS})")
+    else()
+        message(STATUS "  Shaders:      glslang/spirv-cross not found; Metal backend stays fixed-function")
+    endif()
+endif()
+
+# Guest shaders on Vulkan: HLSL -> SPIR-V. glslang only -- Vulkan consumes
+# SPIR-V, so spirv-cross is not needed. Without glslang
+# libs/video/rsx_shader_spirv.cpp is a stub and the Vulkan backend stays on
+# its fixed-function path.
+if(PS3RECOMP_RSX_VULKAN)
+    if(glslang_FOUND AND TARGET glslang::glslang AND TARGET glslang::SPIRV)
+        set_source_files_properties(
+            "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/rsx_shader_spirv.cpp"
+            PROPERTIES COMPILE_DEFINITIONS PS3RECOMP_HAVE_SPIRV_TRANSLATION=1)
+        target_link_libraries(ps3recomp_runtime PRIVATE glslang::glslang glslang::SPIRV)
+        if(TARGET glslang::glslang-default-resource-limits)
+            target_link_libraries(ps3recomp_runtime PRIVATE
+                glslang::glslang-default-resource-limits)
+        endif()
+        message(STATUS "  Vulkan:       guest programs available (glslang ${glslang_VERSION}); "
+                       "opt in with PS3RECOMP_VK_GUEST_PROGRAMS=1")
+    else()
+        message(STATUS "  Vulkan:       glslang not found; guest programs unavailable")
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Compiler flags
+# ---------------------------------------------------------------------------
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(ps3recomp_runtime PRIVATE
+        -Wall -Wextra -Wno-unused-parameter
+        -fno-strict-aliasing
+        # No spontaneous fused multiply-add. MSVC never contracts, and x86-64
+        # without -mfma has nothing to contract into, so every validated
+        # result came from separate multiplies and adds; arm64 has FMA in
+        # the base ISA and Clang fuses by default there. A PPC fmadd is
+        # spelt as one where the lifter means one.
+        -ffp-contract=off
+        # Explicit, because the per-config defaults cannot be trusted: this
+        # tree's caches carry CMAKE_C_FLAGS_RELEASE="" and CMAKE_CXX_FLAGS_RELEASE="",
+        # and clang-cl with no /O flag compiles at /Od -- a "Release" runtime
+        # was unoptimised without a word. Duplicating a default -O2 is harmless.
+        $<$<CONFIG:Release,RelWithDebInfo>:-O2>
+    )
+    # SSE4.1 (any x86-64 since ~2008): pshufb/blendv for spu_shufb, the
+    # hottest SPU op in lifted audio code. Probed rather than assumed: recent
+    # Apple clang rejects the flag outright for arm64 ("unsupported option
+    # '-msse4.1'"), which stops the whole runtime from building there.
+    include(CheckCCompilerFlag)
+    check_c_compiler_flag(-msse4.1 PS3RECOMP_HAS_MSSE41)
+    if(PS3RECOMP_HAS_MSSE41)
+        target_compile_options(ps3recomp_runtime PRIVATE -msse4.1)
+    endif()
+elseif(MSVC)
+    # Real cl.exe -- clang-cl reports its id as Clang and is handled above.
+    #
+    # This does not currently build. The runtime and the lifted output use GCC/
+    # Clang builtins that cl has no equivalent for, and the failure lands as a
+    # wall of errors in whichever file the build happens to reach first rather
+    # than as anything that names the cause. Say it here instead.
+    message(WARNING
+        "Building with cl.exe (MSVC). This is not currently supported.\n"
+        "  The runtime uses __atomic_* builtins, __int128 and __builtin_bswap*, "
+        "and the lifted output uses __int128 for the PPC 64x64 multiplies. "
+        "cl has none of them.\n"
+        "  Use clang-cl instead -- it consumes the MSVC headers and libraries, "
+        "so nothing else about a Visual Studio build changes:\n"
+        "    cmake -S . -B build -G Ninja "
+        "-DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl\n"
+        "  See docs/BUILDING.md. Porting the intrinsics to cl is a welcome "
+        "contribution; nothing else stands in the way.")
+    target_compile_options(ps3recomp_runtime PRIVATE
+        /W3 /wd4100 /wd4244 /wd4267 /wd4996
+        /Zc:__cplusplus
+        /experimental:c11atomics   # Enable C11 <stdatomic.h> support
+    )
+    target_compile_definitions(ps3recomp_runtime PRIVATE
+        _CRT_SECURE_NO_WARNINGS
+    )
+endif()
+
+if(NOT MSVC AND NOT WIN32)
+    # dladdr/Dl_info (runtime/platform/win32_backtrace.h) are GNU extensions
+    # that glibc hides unless _GNU_SOURCE is set. g++ defines it implicitly,
+    # so the C++ boot scaffold never noticed; a C file including the same
+    # shim does not get it for free.
+    target_compile_definitions(ps3recomp_runtime PRIVATE _GNU_SOURCE)
+endif()
+
+# Game module split (include/ps3emu/game_module.h): the runtime for a host exe
+# that loads the lifted code from a DLL. The globals and the two trampoline
+# thread-locals the lifted code shares with the runtime then live in the DLL,
+# and include/ps3emu/game_split.h, force-included into every source, reaches
+# them through pointers. Build it in its own build directory, and only the
+# ps3recomp_runtime target there (the host exe's sources, runtime/ppu among
+# them, are the title's to compile, with the same definition and header): the
+# default library is unchanged. Windows (clang-cl) and x86-64 Linux (clang),
+# where the game is an ELF shared object.
+option(PS3RECOMP_GAME_SPLIT "Build the runtime for a host that loads the game from a DLL" OFF)
+if(PS3RECOMP_GAME_SPLIT)
+    target_compile_definitions(ps3recomp_runtime PRIVATE PS3_GAME_SPLIT)
+    if(MSVC)   # also true for clang-cl
+        target_compile_options(ps3recomp_runtime PRIVATE
+            "/FI${CMAKE_CURRENT_SOURCE_DIR}/include/ps3emu/game_split.h")
+    else()
+        target_compile_options(ps3recomp_runtime PRIVATE
+            -include "${CMAKE_CURRENT_SOURCE_DIR}/include/ps3emu/game_split.h")
+    endif()
+    message(STATUS "  Game split:   ON (the runtime for a host exe and a game DLL)")
+endif()
+
+# ---------------------------------------------------------------------------
+# Portable renderer (PS3RECOMP_RSX_HAL)
+# ---------------------------------------------------------------------------
+# libs/video/gpu holds the GPU layer: its contract (gpu.h, gpu_cmd_ops.h,
+# gpu_vt_cmd.h) and, as they come, its backends; libs/video/rsxcore will hold
+# the RSX code copied from today's renderer onto it. Their .c files are in the
+# glob above, so each must start with #if defined(PS3RECOMP_RSX_HAL): without
+# the option they compile to nothing and the runtime is today's.
+if(PS3RECOMP_RSX_HAL)
+    # PUBLIC: the host picks the renderer's route on it, and includes gpu.h.
+    target_compile_definitions(ps3recomp_runtime PUBLIC PS3RECOMP_RSX_HAL=1)
+    target_include_directories(ps3recomp_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/gpu")
+    # The third-party code the backends build on: declared there, downloaded
+    # only by the sub-options that use it.
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/gpu_deps.cmake")
+
+    # The contract test: the three headers from C (C99 where the compiler has
+    # the switch) and from C++, D3D12's numbers and structures, and every
+    # command against gpu_vt_cmd.h.
+    #   cmake --build build --target test_gpu_contract
+    #   ctest --test-dir build -R gpu_contract
+    add_executable(test_gpu_contract
+        libs/video/tests/test_gpu_contract.c
+        libs/video/tests/test_gpu_contract.cpp
+    )
+    target_include_directories(test_gpu_contract PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/gpu"
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/tests"
+    )
+    if(NOT MSVC)   # (clang-cl has no C99 switch; it builds the C half as C17)
+        set_target_properties(test_gpu_contract PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+        target_compile_options(test_gpu_contract PRIVATE
+            -Wall -Wextra -Wpedantic -Wno-unused-parameter -Werror)
+    endif()
+    enable_testing()
+    add_test(NAME gpu_contract COMMAND test_gpu_contract)
+
+    # The compile service's spv target (PS3RECOMP_RSX_HAL_SPV from gpu_deps.cmake): glslang and SPIRV-Tools, static.
+    # Public, as PS3RECOMP_RSX_HAL is: a backend or setup asks gpu_sc_available(GPU_SC_SPV) at run time anyway.
+    # Its test puts the seeded generator's programs and the built-in passes through it: every module compiles and
+    # validates, its bindings and locations are the binding model's, it is the same twice, and the edits' output
+    # matches their goldens. --corpus <dir> runs the same checks over kept texts (PS3_SHADER_CACHE_HLSL=1).
+    #   cmake --build build --target test_gpu_sc_spv
+    #   ctest --test-dir build -R gpu_sc_spv
+    if(PS3RECOMP_RSX_HAL_SPV)
+        target_sources(ps3recomp_runtime PRIVATE
+            libs/video/gpu/gpu_shader_spv.cpp
+            libs/video/gpu/gpu_shader_spv_edit.cpp)
+        target_compile_definitions(ps3recomp_runtime PUBLIC PS3RECOMP_RSX_HAL_SPV=1)
+        target_link_libraries(ps3recomp_runtime PRIVATE
+            glslang glslang-default-resource-limits SPIRV-Tools-opt SPIRV-Tools-static)
+        add_executable(test_gpu_sc_spv EXCLUDE_FROM_ALL
+            libs/video/tests/test_gpu_sc_spv.c
+            runtime/host/host_stubs.c
+        )
+        target_compile_definitions(test_gpu_sc_spv PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_link_libraries(test_gpu_sc_spv PRIVATE ps3recomp_runtime)
+        target_include_directories(test_gpu_sc_spv PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/libs/video"
+            "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/tests"
+            "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        )
+        set_target_properties(test_gpu_sc_spv PROPERTIES LINKER_LANGUAGE CXX)
+        add_test(NAME gpu_sc_spv COMMAND test_gpu_sc_spv)
+    endif()
+
+    # The D3D12 backend's test: on WARP, so it needs no GPU; GPU_TEST_HW=1
+    # runs it on the real one. Built on demand:
+    #   cmake --build build --target test_gpu_d3d12
+    #   ctest --test-dir build -R gpu_d3d12
+    if(WIN32)
+        add_executable(test_gpu_d3d12 EXCLUDE_FROM_ALL
+            libs/video/tests/test_gpu_d3d12.c
+            runtime/host/host_stubs.c
+        )
+        target_compile_definitions(test_gpu_d3d12 PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_link_libraries(test_gpu_d3d12 PRIVATE ps3recomp_runtime d3d12 dxgi dxguid d3dcompiler)
+        target_include_directories(test_gpu_d3d12 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/gpu")
+        set_target_properties(test_gpu_d3d12 PROPERTIES LINKER_LANGUAGE CXX)
+        add_test(NAME gpu_d3d12 COMMAND test_gpu_d3d12)
+    endif()
+
+    # The Vulkan backend (gpu_vk*, PS3RECOMP_RSX_HAL_VULKAN from gpu_deps.cmake): volk and the pinned headers.
+    # PS3RECOMP_RSX_HAL_VULKAN is public, as PS3RECOMP_RSX_HAL is: the route switch offers Vulkan only when built.
+    if(PS3RECOMP_RSX_HAL_VULKAN)
+        set(_ps3_volk "${CMAKE_CURRENT_SOURCE_DIR}/third_party/volk/volk.c")
+        target_sources(ps3recomp_runtime PRIVATE "${_ps3_volk}")
+        set_source_files_properties("${_ps3_volk}" PROPERTIES COMPILE_OPTIONS "-w")   # upstream code
+        if(WIN32)   # volk loads the Win32 surface functions too
+            set_source_files_properties("${_ps3_volk}" PROPERTIES COMPILE_DEFINITIONS VK_USE_PLATFORM_WIN32_KHR)
+        endif()
+        target_compile_definitions(ps3recomp_runtime PUBLIC PS3RECOMP_RSX_HAL_VULKAN=1)
+        target_include_directories(ps3recomp_runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/volk")
+        target_link_libraries(ps3recomp_runtime PRIVATE Vulkan::Headers ${CMAKE_DL_LIBS})
+
+        # Its test, the D3D12 test's cases on Vulkan: on a CPU device (lavapipe) when there is one, else on the
+        # GPU; GPU_TEST_HW=1 takes the GPU. The validation layer is on (GPU_TEST_VALIDATION=0 runs without it)
+        # and any message it gives fails the test; RSX_VK_MASK=<GPU_CAP_* bits> runs the fallbacks. On demand:
+        #   cmake --build build --target test_gpu_vk
+        #   ctest --test-dir build -R gpu_vk
+        add_executable(test_gpu_vk EXCLUDE_FROM_ALL
+            libs/video/tests/test_gpu_vk.c
+            runtime/host/host_stubs.c
+        )
+        target_compile_definitions(test_gpu_vk PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_link_libraries(test_gpu_vk PRIVATE ps3recomp_runtime Vulkan::Headers)
+        target_include_directories(test_gpu_vk PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/gpu"
+            "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/tests"
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/volk")
+        if(WIN32)   # the footprint check compares with D3D12's, on WARP
+            target_link_libraries(test_gpu_vk PRIVATE d3d12 dxgi dxguid user32)
+        endif()
+        set_target_properties(test_gpu_vk PROPERTIES LINKER_LANGUAGE CXX)
+        add_test(NAME gpu_vk COMMAND test_gpu_vk)
+    endif()
+
+    # The null backend's test: it records and checks and draws nothing, so it
+    # runs on every system; its stream hash is a golden. The backend is built
+    # into it with the strict flags. Built on demand:
+    #   cmake --build build --target test_gpu_null
+    #   ctest --test-dir build -R gpu_null
+    add_executable(test_gpu_null EXCLUDE_FROM_ALL
+        libs/video/tests/test_gpu_null.c
+        libs/video/gpu/gpu_null.c
+    )
+    target_compile_definitions(test_gpu_null PRIVATE PS3RECOMP_RSX_HAL=1)
+    target_include_directories(test_gpu_null PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/gpu")
+    if(MSVC)
+        target_compile_definitions(test_gpu_null PRIVATE _CRT_SECURE_NO_WARNINGS)
+    else()
+        set_target_properties(test_gpu_null PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+        target_compile_options(test_gpu_null PRIVATE
+            -Wall -Wextra -Wpedantic -Wno-unused-parameter -Werror)
+    endif()
+    add_test(NAME gpu_null COMMAND test_gpu_null)
+    message(STATUS "  Renderer:     the portable renderer's GPU layer too (PS3RECOMP_RSX_HAL)")
+endif()
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+if(PS3RECOMP_BUILD_TESTS)
+    include(CTest)
+    # Controller slots must survive SDL device-index changes and non-gamepad devices.
+    add_executable(test_pad_sdl_slots libs/input/tests/test_pad_sdl_slots.c)
+    target_include_directories(test_pad_sdl_slots PRIVATE libs/input)
+    if(MSVC)
+        target_compile_options(test_pad_sdl_slots PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(test_pad_sdl_slots PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME pad_sdl_slots COMMAND test_pad_sdl_slots)
+    # PAD_CONTROLLER's names and the port it finds.
+    add_executable(test_pad_controller libs/input/tests/test_pad_controller.c)
+    target_include_directories(test_pad_controller PRIVATE libs/input)
+    if(MSVC)
+        target_compile_options(test_pad_controller PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(test_pad_controller PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME pad_controller COMMAND test_pad_controller)
+    # Event queues made and destroyed while host threads push to them (#311). It links the whole runtime, with
+    # host_stubs.c for the loader's symbols, as test_rsx_synth does (Windows and Linux).
+    if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(test_event_queue_life
+            runtime/syscalls/tests/test_event_queue_life.c
+            runtime/host/host_stubs.c
+        )
+        target_link_libraries(test_event_queue_life PRIVATE ps3recomp_runtime)
+        if(WIN32)
+            target_link_libraries(test_event_queue_life PRIVATE dxguid)
+        endif()
+        if(MSVC)
+            target_compile_options(test_event_queue_life PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(test_event_queue_life PRIVATE -UNDEBUG)
+        endif()
+        set_target_properties(test_event_queue_life PROPERTIES LINKER_LANGUAGE CXX)
+        add_test(NAME event_queue_life COMMAND test_event_queue_life)
+    endif()
+    # sync_stress is written directly against the Win32 threading API
+    # (WaitForMultipleObjects, joinable HANDLEs, Interlocked*, CRITICAL_SECTION).
+    # Off Windows all of that comes from runtime/platform/win32_compat.h, so
+    # the suite runs everywhere -- and is the arm64 memory-model regression
+    # net for the lv2 sync primitives.
+    add_subdirectory(tests/sync_stress)
+    # cellFiber switches contexts with Windows fibers on Windows and ucontext
+    # everywhere else. Apple deprecated the ucontext routines and gates both
+    # them and the shape of ucontext_t on _XOPEN_SOURCE, so whether that path
+    # works on arm64 is a question to answer rather than assume.
+    add_subdirectory(tests/fiber_switch)
+    # The guest system-time clock (sys_time_get_system_time, and the flip
+    # time cellGcmGetLastFlipTime reports) counts microseconds.
+    add_subdirectory(tests/lv2_time)
+    # runtime/platform/plat.h's threads, events and mutex, and the SPU async
+    # job pool written once on them for every platform.
+    add_subdirectory(tests/plat_threads)
+    # cellVdec through its guest API: the callback-only decoder always, and
+    # real H.264 / MPEG-2 decode when FFmpeg is on (libs/codec/tests).
+    add_subdirectory(libs/codec/tests)
+endif()
+
+# ---------------------------------------------------------------------------
+# POSIX host harness
+# ---------------------------------------------------------------------------
+# Drives the cellGcm -> RSX -> backend bridge with no lifted game, so a backend
+# can be brought up and regression-tested without a game binary or a recompiler
+# run. Builds on any POSIX host: it picks Metal on Apple and the null backend's
+# headless software path everywhere else, so Linux -- which has no real backend
+# yet -- can still run the whole guest command stream end to end in CI.
+if(UNIX)
+    add_executable(ps3recomp_host
+        runtime/host/host_posix.c
+        runtime/host/host_stubs.c
+    )
+    target_link_libraries(ps3recomp_host PRIVATE ps3recomp_runtime)
+    if(NOT WIN32)
+        # glibc keeps the math functions in a separate library; MSVC does not.
+        target_link_libraries(ps3recomp_host PRIVATE m)
+    endif()
+    target_include_directories(ps3recomp_host PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/video"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    )
+    # The runtime carries C++ (and, with translation on, spirv-cross), so the
+    # C++ driver must do the final link or the standard library goes missing.
+    set_target_properties(ps3recomp_host PROPERTIES LINKER_LANGUAGE CXX)
+
+    # Guest shader translation, decompilers -> HLSL -> MSL, with no GPU: the
+    # regression net for the Metal backend's shader path on every platform.
+    if(PS3RECOMP_MSL_TRANSLATION)
+        add_executable(test_shader_msl
+            libs/video/tests/test_shader_msl.c
+            libs/video/rsx_shader_msl.cpp
+            libs/video/rsx_vp_decompiler.c
+            libs/video/rsx_fp_decompiler.c
+        )
+        target_include_directories(test_shader_msl PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/libs/video"
+            "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        )
+        target_link_libraries(test_shader_msl PRIVATE ps3recomp_msl_translation)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Frame replayer (Windows / D3D12)
+# ---------------------------------------------------------------------------
+# Plays back one frame a game run captured with RSX_REPLAY_CAP=<file> through
+# the same method dispatch and D3D12 backend, with no game linked in: see
+# libs/video/tests/rsx_replay_main.c. Built on demand (not part of "all"):
+#   cmake --build build --target rsx_replay
+if(WIN32)
+    add_executable(rsx_replay EXCLUDE_FROM_ALL
+        libs/video/tests/rsx_replay_main.c
+        runtime/host/host_stubs.c
+    )
+    target_link_libraries(rsx_replay PRIVATE ps3recomp_runtime dxguid)
+    target_include_directories(rsx_replay PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/video"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    )
+    set_target_properties(rsx_replay PROPERTIES LINKER_LANGUAGE CXX)
+
+    # Fills the backend's shader disk cache from a title's Cg binaries
+    # (.vpo/.fpo) before it runs: libs/video/tests/rsx_shader_precompile_main.c.
+    add_executable(rsx_shader_precompile EXCLUDE_FROM_ALL
+        libs/video/tests/rsx_shader_precompile_main.c
+        runtime/host/host_stubs.c
+    )
+    target_link_libraries(rsx_shader_precompile PRIVATE ps3recomp_runtime dxguid)
+    target_include_directories(rsx_shader_precompile PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/video"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    )
+    set_target_properties(rsx_shader_precompile PROPERTIES LINKER_LANGUAGE CXX)
+endif()
+
+# The portable renderer's shader texts (libs/video/rsxcore/rsxc_shader.c) and
+# compile service (libs/video/gpu/gpu_shader.c) against today's D3D12
+# renderer's exports, byte for byte: libs/video/tests/test_shader_text_identity.c.
+# It compiles those two files itself, with PS3RECOMP_RSX_HAL defined, unless
+# the library already has them. Built on demand:
+#   cmake --build build --target test_shader_text_identity
+if(WIN32)
+    add_executable(test_shader_text_identity EXCLUDE_FROM_ALL
+        libs/video/tests/test_shader_text_identity.c
+        runtime/host/host_stubs.c
+    )
+    if(NOT PS3RECOMP_RSX_HAL)
+        target_sources(test_shader_text_identity PRIVATE
+            libs/video/rsxcore/rsxc_shader.c
+            libs/video/gpu/gpu_shader.c
+        )
+    endif()
+    target_compile_definitions(test_shader_text_identity PRIVATE
+        PS3RECOMP_RSX_HAL=1 _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(test_shader_text_identity PRIVATE ps3recomp_runtime dxguid d3dcompiler)
+    target_include_directories(test_shader_text_identity PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/video"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    )
+    set_target_properties(test_shader_text_identity PROPERTIES LINKER_LANGUAGE CXX)
+endif()
+
+# The portable renderer's core on the null backend, over synthetic scenes: libs/video/tests/test_rsx_synth.c.
+# Seeded programs (rsx_prog_gen.h), vertex data, textures and surfaces written as captures and played as
+# rsx_replay plays a chain, in two processes; each scene's stream hash against its golden, no failed null
+# check. Windows and Linux, as the null route, with one golden list. test_rsx_synth --route vulkan plays the
+# chain on the Vulkan route under the validation layer instead (builds with PS3RECOMP_RSX_HAL_VULKAN; it needs
+# a Vulkan device and a display, so it is no ctest: linux.yml runs it on lavapipe). test_rsx_synth --stores
+# vulkan|d3d12 checks the new path's pipeline stores on a GPU (Windows; no ctest either). Built on demand:
+#   cmake --build build --target test_rsx_synth
+#   ctest --test-dir build -R rsx_synth
+if(PS3RECOMP_RSX_HAL AND (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    add_executable(test_rsx_synth EXCLUDE_FROM_ALL
+        libs/video/tests/test_rsx_synth.c
+        runtime/host/host_stubs.c
+    )
+    target_compile_definitions(test_rsx_synth PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(test_rsx_synth PRIVATE ps3recomp_runtime)
+    if(WIN32)
+        target_link_libraries(test_rsx_synth PRIVATE dxguid)
+    endif()
+    target_include_directories(test_rsx_synth PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/video"
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/video/tests"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    )
+    set_target_properties(test_rsx_synth PROPERTIES LINKER_LANGUAGE CXX)
+    add_test(NAME rsx_synth COMMAND test_rsx_synth)
+
+    # The route switch's choice (libs/video/rsx_out.c: RSX_BACKEND, the starts that fall back, Vulkan's to the
+    # default and the new path's D3D12 to the legacy renderer, and Vulkan's start mark), built here against
+    # stand-ins for the renderers: libs/video/tests/test_rsx_out.c. No GPU, no window, and the Vulkan route's code
+    # whether or not this build has it. On Linux the switch is built as a host with the legacy renderer on vkd3d
+    # builds it (PS3RECOMP_RSX_D3D12_VKD3D; nothing of vkd3d is used). Built on demand:
+    #   cmake --build build --target test_rsx_out
+    #   ctest --test-dir build -R rsx_out
+    add_executable(test_rsx_out EXCLUDE_FROM_ALL
+        libs/video/tests/test_rsx_out.c
+        libs/video/rsx_out.c
+    )
+    target_compile_definitions(test_rsx_out PRIVATE
+        PS3RECOMP_RSX_HAL=1 PS3RECOMP_RSX_HAL_VULKAN=1 _CRT_SECURE_NO_WARNINGS)
+    if(NOT WIN32)
+        target_compile_definitions(test_rsx_out PRIVATE PS3RECOMP_RSX_D3D12_VKD3D=1)
+    endif()
+    target_include_directories(test_rsx_out PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/video"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    )
+    add_test(NAME rsx_out COMMAND test_rsx_out)
+endif()
+
+# Setup's shader pass (libs/video/rsx_shader_precompile.c) over a game's
+# programs as the port feeds them, one target a run, and checks of what it
+# wrote (the same files as another run, the spv target's modules):
+# libs/video/tests/precompile_compare.c. Where the pass runs: Windows, and
+# with the spv target. A game's files go in and out, so it is no ctest.
+# Built on demand:
+#   cmake --build build --target precompile_compare
+if(WIN32 OR PS3RECOMP_RSX_HAL_SPV)
+    add_executable(precompile_compare EXCLUDE_FROM_ALL
+        libs/video/tests/precompile_compare.c
+        libs/video/tests/precompile_compare_today.c
+        runtime/host/host_stubs.c
+    )
+    target_compile_definitions(precompile_compare PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(precompile_compare PRIVATE ps3recomp_runtime)
+    if(WIN32)
+        target_link_libraries(precompile_compare PRIVATE dxguid)
+    endif()
+    target_include_directories(precompile_compare PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/video"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    )
+    set_target_properties(precompile_compare PROPERTIES LINKER_LANGUAGE CXX)
+endif()
+
+# ---------------------------------------------------------------------------
+# PPU boot smoke title
+# ---------------------------------------------------------------------------
+# The one target that LINKS AND RUNS the PPU boot scaffold. runtime/ppu/ is the
+# game-agnostic boot path every port is built on, and nothing here has ever
+# built it: it needs a lift beside it, so tools/check_ppu_scaffold.py compiles
+# it against a stub header and stops there. Compiling is not running, and on
+# POSIX the loader, the NID bridge, the lv2 syscalls, guest threads, the frame
+# clock and the RSX backend had never once run together.
+#
+# runtime/ppu/tests/smoke/ supplies what was missing: a hand-written program in
+# the lifter's ABI, and tools/make_smoke_elf.py writes both the PPU ELF it is
+# loaded from and the ppu_recomp.h it compiles against -- the header
+# ppu_lifter.py itself writes, which includes the fixed ps3emu/ppu_lift.h, so
+# the synthetic title cannot drift away from the ABI a real one gets.
+#
+# The HLE NID table is generated exactly as a port generates it, so the smoke
+# title's firmware imports resolve through the same bridge a game's do.
+if(UNIX)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(NOT Python3_Interpreter_FOUND)
+        message(STATUS "  Boot smoke:   no python3; ps3recomp_boot_smoke not built")
+    else()
+        set(SMOKE_GEN "${CMAKE_CURRENT_BINARY_DIR}/smoke")
+
+        add_custom_command(
+            OUTPUT "${SMOKE_GEN}/smoke.elf" "${SMOKE_GEN}/ppu_recomp.h"
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_smoke_elf.py"
+                    --out    "${SMOKE_GEN}/smoke.elf"
+                    --header "${SMOKE_GEN}/ppu_recomp.h"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_smoke_elf.py"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tools/ppu_lifter.py"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/include/ps3emu/ppu_lift.h"
+            COMMENT "Generating the smoke title's image and ppu_recomp.h")
+
+        add_custom_command(
+            OUTPUT "${SMOKE_GEN}/ppu_hle_nids.cpp"
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_hle_nids.py"
+                    --out "${SMOKE_GEN}/ppu_hle_nids.cpp" --all
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_hle_nids.py"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tools/nid_database.py"
+            COMMENT "Generating the HLE NID -> handler table")
+
+        add_executable(ps3recomp_boot_smoke
+            runtime/ppu/tests/boot_main.cpp
+            runtime/ppu/tests/smoke/smoke_recomp.c
+            runtime/ppu/ppu_loader.cpp
+            runtime/ppu/ppu_hle.cpp
+            runtime/ppu/ppu_fs.cpp
+            runtime/ppu/ppu_sysprx.cpp
+            "${SMOKE_GEN}/ppu_hle_nids.cpp"
+            "${SMOKE_GEN}/ppu_recomp.h"
+        )
+        target_include_directories(ps3recomp_boot_smoke PRIVATE
+            "${SMOKE_GEN}"                                  # the generated ppu_recomp.h
+            "${CMAKE_CURRENT_SOURCE_DIR}/include"
+            "${CMAKE_CURRENT_SOURCE_DIR}/runtime/ppu"
+            "${CMAKE_CURRENT_SOURCE_DIR}/runtime/spu"
+            "${CMAKE_CURRENT_SOURCE_DIR}/runtime/memory"
+            "${CMAKE_CURRENT_SOURCE_DIR}/runtime/syscalls"
+            "${CMAKE_CURRENT_SOURCE_DIR}/runtime/platform"
+            "${CMAKE_CURRENT_SOURCE_DIR}/libs/video"
+        )
+        target_link_libraries(ps3recomp_boot_smoke PRIVATE ps3recomp_runtime)
+        set_target_properties(ps3recomp_boot_smoke PROPERTIES LINKER_LANGUAGE CXX)
+
+        # Where the runnable image lands, so CI and a developer both say
+        #   ./build/ps3recomp_boot_smoke build/smoke/smoke.elf
+        message(STATUS "  Boot smoke:   ps3recomp_boot_smoke + smoke/smoke.elf")
+
+        # The same lift again, arranged the way a port's own tree arranges one:
+        # the generated ppu_recomp.h and the lifted source in one directory,
+        # which is what templates/project wants for -DRECOMP_DIR. The header is
+        # generated into the build tree and the source lives in the repository,
+        # so a directory holding both has to be made rather than pointed at.
+        #
+        # This is what lets CI build the project template against a real lift
+        # and run it -- the check that a port started from templates/project
+        # still boots, on a platform where it can be run.
+        set(SMOKE_LIFT "${SMOKE_GEN}/lift")
+        set(SMOKE_LIFT_SRC
+            "${CMAKE_CURRENT_SOURCE_DIR}/runtime/ppu/tests/smoke/smoke_recomp.c")
+        add_custom_command(
+            OUTPUT "${SMOKE_LIFT}/ppu_recomp.h" "${SMOKE_LIFT}/smoke_recomp.c"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${SMOKE_LIFT}"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "${SMOKE_GEN}/ppu_recomp.h" "${SMOKE_LIFT}/ppu_recomp.h"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "${SMOKE_LIFT_SRC}" "${SMOKE_LIFT}/smoke_recomp.c"
+            DEPENDS "${SMOKE_GEN}/ppu_recomp.h" "${SMOKE_LIFT_SRC}"
+            COMMENT "Staging the smoke title's lift as a RECOMP_DIR")
+        add_custom_target(ps3recomp_smoke_lift ALL
+            DEPENDS "${SMOKE_LIFT}/ppu_recomp.h" "${SMOKE_LIFT}/smoke_recomp.c")
+        message(STATUS "  Smoke lift:   smoke/lift (a RECOMP_DIR for templates/project)")
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# What a host that imports the runtime links besides it
+# ---------------------------------------------------------------------------
+# A host that links ps3recomp_runtime.lib (libps3recomp_runtime.a) from this
+# build as an imported library, as a port does, also needs the static
+# libraries built here that the runtime links: glslang and SPIRV-Tools with
+# PS3RECOMP_RSX_HAL_SPV, the Metal path's MSL translation. A static library
+# doesn't contain them, and an imported one doesn't know them.
+# ps3recomp_runtime_deps.cmake, beside the library, sets PS3RECOMP_RUNTIME_DEPS
+# to their files in link order (each before the libraries it uses). Libraries
+# from outside this build (ws2_32, SDL2, a system glslang, the frameworks)
+# aren't listed: a host names those itself. This comes after every
+# target_link_libraries(ps3recomp_runtime ...).
+function(_ps3recomp_static_deps tgt stack)
+    get_target_property(_libs ${tgt} INTERFACE_LINK_LIBRARIES)
+    if(NOT _libs)
+        return()
+    endif()
+    foreach(_l IN LISTS _libs)
+        # A static library's private dependencies show as $<LINK_ONLY:x>.
+        foreach(_pass RANGE 1)
+            string(REGEX REPLACE "^\\$<(LINK_ONLY|BUILD_INTERFACE):(.*)>$" "\\2" _l "${_l}")
+        endforeach()
+        if(NOT TARGET "${_l}")
+            continue()
+        endif()
+        get_target_property(_aliased "${_l}" ALIASED_TARGET)
+        if(_aliased)
+            set(_l "${_aliased}")
+        endif()
+        get_target_property(_imported "${_l}" IMPORTED)
+        if(_imported OR "${_l}" IN_LIST stack)
+            continue()
+        endif()
+        get_target_property(_type "${_l}" TYPE)
+        if(_type STREQUAL "STATIC_LIBRARY")
+            set_property(GLOBAL APPEND PROPERTY _PS3RECOMP_RUNTIME_DEPS "${_l}")
+        endif()
+        _ps3recomp_static_deps("${_l}" "${stack};${_l}")
+    endforeach()
+endfunction()
+set_property(GLOBAL PROPERTY _PS3RECOMP_RUNTIME_DEPS "")
+get_target_property(_ps3_rt_type ps3recomp_runtime TYPE)
+if(_ps3_rt_type STREQUAL "STATIC_LIBRARY")
+    _ps3recomp_static_deps(ps3recomp_runtime "ps3recomp_runtime")
+endif()
+get_property(_ps3_rt_deps GLOBAL PROPERTY _PS3RECOMP_RUNTIME_DEPS)
+# A library reached twice keeps its last place, after everything that uses it.
+list(REVERSE _ps3_rt_deps)
+list(REMOVE_DUPLICATES _ps3_rt_deps)
+list(REVERSE _ps3_rt_deps)
+set(_ps3_rt_files "")
+foreach(_d IN LISTS _ps3_rt_deps)
+    string(APPEND _ps3_rt_files "\n    \"$<TARGET_LINKER_FILE:${_d}>\"")
+endforeach()
+file(GENERATE OUTPUT "$<TARGET_FILE_DIR:ps3recomp_runtime>/ps3recomp_runtime_deps.cmake"
+     CONTENT "# The static libraries built with this runtime that it links (written by ps3recomp's configure).\nset(PS3RECOMP_RUNTIME_DEPS${_ps3_rt_files})\n")
+list(LENGTH _ps3_rt_deps _ps3_rt_n)
+message(STATUS "  Link:         ${_ps3_rt_n} static libraries a host links with the runtime (ps3recomp_runtime_deps.cmake)")
+
+# ---------------------------------------------------------------------------
+# Install
+# ---------------------------------------------------------------------------
+install(TARGETS ps3recomp_runtime
+    ARCHIVE DESTINATION lib
+    LIBRARY DESTINATION lib
+)
+
+install(DIRECTORY include/ps3emu
+    DESTINATION include
+    FILES_MATCHING PATTERN "*.h"
+)
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+message(STATUS "")
+message(STATUS "ps3recomp runtime v${PROJECT_VERSION}")
+message(STATUS "  C compiler:   ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}")
+message(STATUS "  C++ compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+message(STATUS "  Build type:   ${CMAKE_BUILD_TYPE}")
+message(STATUS "")

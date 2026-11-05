@@ -1,0 +1,745 @@
+/* ---------------------------------------------------------------------------
+ * Backend registration
+ * -----------------------------------------------------------------------*/
+
+static rsx_backend s_d3d12_backend = {0};
+
+/* ---------------------------------------------------------------------------
+ * Public API
+ * -----------------------------------------------------------------------*/
+
+static void rc_release_device(void);
+static void rc_abort_init(void);
+
+static int rc_backend_init(u32 width, u32 height, const char* title)
+{
+    s_rc_start_failed = NULL;   /* (step V6: start_step's record of this start) */
+    { extern void (*g_gcm_fifo_flip_hook)(void); g_gcm_fifo_flip_hook = d3d12_fifo_flip; }
+    if (ps3_env_int("RSX_ZPASS", 1)) g_rsx_report_hook = zq_hook;
+    { extern void (*g_rcap_mark_hook)(int end); g_rcap_mark_hook = cap_mark; }
+    {   /* The draw records a start before this one made, zeroed as the array they were. */
+        D3D12DrawRecord* const draws = s_d3d.draws;
+        memset(&s_d3d, 0, sizeof(s_d3d));
+        if (draws) memset(draws, 0, (size_t)MAX_DRAWS * sizeof *draws);
+        s_d3d.draws = draws;
+    }
+    memset(s_vp_fp_head, 0, sizeof s_vp_fp_head);   /* the PSO cache is empty again */
+    s_d3d.width = width;
+    s_d3d.height = height;
+    s_d3d.host_w = rt_host_dim(width, height, width);
+    s_d3d.host_h = rt_host_dim(width, height, height);
+    s_d3d.clear_color[0] = 0.0f;
+    s_d3d.clear_color[1] = 0.0f;
+    s_d3d.clear_color[2] = 0.1f;
+    s_d3d.clear_color[3] = 1.0f;
+
+    /* Debug: dump the first N presented frames to BMP if CELLMARK_DUMP is set
+     * (its numeric value when > 1, else 24). */
+    {
+        const char* dv = getenv("CELLMARK_DUMP");
+        int n = dv ? atoi(dv) : 0;
+        s_d3d.dump_frames_left = dv ? (n > 1 ? n : 24) : 0;
+        /* CELLMARK_DUMP_SKIP=N: ignore the first N presents before dumping.
+         * The opening frames are the loading screen; the interesting content
+         * only appears once the sim SPUs have advanced the scene. */
+        { const char* sv = getenv("CELLMARK_DUMP_SKIP");
+          s_d3d.dump_skip_left = sv ? atoi(sv) : 0; }
+    }
+
+    /* Create window */
+    {
+        extern char g_rsx_title_base[128];
+        snprintf(g_rsx_title_base, sizeof(g_rsx_title_base), "%s",
+                 title ? title : "ps3recomp");
+    }
+    /* (A headless backend, rc_be_headless, presents into its swap chain's
+     * images with no window: step C8b.) */
+    s_d3d.hwnd = rc_be_headless ? NULL : open_window(width, height, title);
+    if (!start_step("window", s_d3d.hwnd || rc_be_headless)) {
+        printf("[D3D12] ERROR: Window creation failed\n");
+        rc_abort_init();
+        return -1;
+    }
+    if (s_d3d.hwnd) session_lock_init(s_d3d.hwnd);
+
+    /* Initialize D3D12 */
+    if (init_d3d12(width, height) != 0) {
+        printf("[D3D12] ERROR: D3D12 initialization failed\n");
+        rc_abort_init();
+        return -1;
+    }
+    /* The frame's draw records: made at the first start (zero, as the array
+     * in s_d3d was) and kept through a shutdown for a start after it; only
+     * this backend's start makes them, so the other backends' copies of
+     * s_d3d hold none. (After init_d3d12: RSX_FAIL_START_AT=rings still
+     * fails at its rings.) */
+    if (!s_d3d.draws) s_d3d.draws = (D3D12DrawRecord*)calloc(MAX_DRAWS, sizeof *s_d3d.draws);
+    if (!start_step("rings", s_d3d.draws != NULL)) {
+        printf("[D3D12] ERROR: no memory for the draw records\n");
+        rc_abort_init();
+        return -1;
+    }
+
+    /* Set up backend callbacks */
+    s_d3d12_backend.userdata          = &s_d3d;
+    s_d3d12_backend.init              = d3d12_init;
+    s_d3d12_backend.shutdown          = d3d12_shutdown;
+    s_d3d12_backend.begin_frame       = d3d12_begin_frame;
+    s_d3d12_backend.end_frame         = d3d12_end_frame;
+    s_d3d12_backend.present           = d3d12_present;
+    s_d3d12_backend.clear             = d3d12_clear;
+    s_d3d12_backend.set_render_target = d3d12_set_render_target;
+    s_d3d12_backend.set_viewport      = d3d12_set_viewport;
+    s_d3d12_backend.set_blend         = d3d12_set_blend;
+    s_d3d12_backend.set_depth_stencil = d3d12_set_depth_stencil;
+    s_d3d12_backend.set_shader        = d3d12_set_shader;
+    s_d3d12_backend.set_vertex_attribs = d3d12_set_vertex_attribs;
+    s_d3d12_backend.draw_arrays       = d3d12_draw_arrays;
+    s_d3d12_backend.draw_indexed      = d3d12_draw_indexed;
+    s_d3d12_backend.bind_texture      = d3d12_bind_texture;
+
+    rsx_set_backend(&s_d3d12_backend);
+
+    s_d3d.initialized = 1;
+    s_d3d.last_fps_time = GetTickCount64();
+
+    printf("[D3D12] Backend ready: %ux%u\n", width, height);
+    return 0;
+}
+
+static void rc_backend_shutdown(void)
+{
+    if (!s_d3d.initialized) return;
+
+    /* Step C8a: the vertex jobs' queued work first. The rings they write are
+     * the GPU layer's buffers, and gpu_destroy below frees them (today's
+     * leaked, mapped for life): a job still writing then would write freed
+     * memory. */
+    vpj_sync();
+    wait_for_gpu();
+    if (s_pso_lib_on) {
+        if (ps3_env_int("PS3_PSO_WAIT", 0)) pso_builds_finish();   /* (step P3S) */
+        InterlockedExchange(&s_pso_pre_abort, 1);
+        while (s_pso_lib_saving || s_pso_pre_live || s_gmb_live || s_pxb_live || s_gm_writing) Sleep(1);
+        pso_manifest_flush();
+        gm_flush();   /* (step P3S: the neutral manifest's records, whether or not the library is saved) */
+        if (s_pso_lib_new) pso_lib_save();
+    }
+    while (s_pxr_writing) Sleep(1);
+    pso_index_flush();
+    pso_count_print("this run");
+
+    rc_release_device();
+
+    /* A window belongs to the thread that made it: the window thread
+     * destroys its own and then leaves its message loop. */
+    InterlockedExchange(&s_overlay_on, 0);   /* (its device is gone; and this close must not ask first) */
+#ifdef _WIN32
+    if (s_d3d.hwnd) {
+        if (s_window_thread) PostMessageA(s_d3d.hwnd, WM_CLOSE, 0, 0);
+        else DestroyWindow(s_d3d.hwnd);
+    }
+#else
+    if (s_d3d.hwnd) win_post(WIN_MAIL_CLOSE, 0);
+#endif
+
+    rsx_set_backend(NULL);
+    s_d3d.initialized = 0;
+
+    printf("[D3D12] Backend shut down\n");
+}
+
+/* The device and everything made on it (rc_backend_shutdown, and step V6's
+ * rc_abort_init), once the GPU has nothing of ours left to run. */
+static void rc_release_device(void)
+{
+    /* Release D3D12 resources */
+    /* The write-back's buffer over guest memory (the GPU layer's, step C5b)
+     * goes here, as today, while guest memory is there; the GPU is idle. */
+    if (GPU_VALID(s_wbg.buf)) gpu_buffer_destroy(s_rc_dev, s_wbg.buf, 0);
+    s_wbg.buf.id = 0;
+    s_wbg.state = -1;
+    /* Step C2: the buffers are the GPU layer's and go with gpu_destroy; the
+     * pointers into them were borrowed. */
+    s_d3d.vb_mapped = s_d3d.vp_vb_mapped = s_d3d.vp_ib_mapped = NULL;
+    s_rc_vertex_buf.id = s_rc_vp_ib.id = 0;
+    s_rc_readback_buf.id = 0;
+    s_rc_ring_old[0].id = s_rc_ring_old[1].id = 0;
+    memset(&s_vb, 0, sizeof s_vb);   /* (its chunks went with the device too) */
+    s_vb_big = ~0ull;
+    /* vf_buf's chunks, the same; and the frame's place in them, so a start
+     * after this one writes through none of their pointers. */
+    memset(&s_vf, 0, sizeof s_vf);
+    s_vf_cap = s_vf_off = s_vf_lo = s_vf_end = 0; s_vf_wp = NULL; s_fx.valid = 0;
+    memset(&s_rc_vpcb, 0, sizeof s_rc_vpcb);   /* the constants' chunks, and their banks' numbers */
+    memset(&s_rc_fpcb, 0, sizeof s_rc_fpcb);
+    s_vcb_last = ~0u; s_vcb_n = 0; s_fpcb_hi = 0;
+    /* The passes' layouts and pipelines are the GPU layer's (step C3b) and go
+     * with gpu_destroy. */
+    s_d3d.blit_pso = k_rc_no_pipe;
+    /* Step C6: the AA display copy, SMAA's textures and the repaint hold are
+     * the GPU layer's and go with gpu_destroy. */
+    s_aa.disp_tex.id = 0;
+    s_hold_tex.id = 0; s_hold_valid = 0;
+    memset(&s_of, 0, sizeof s_of);
+    memset(&s_aa, 0, sizeof s_aa);
+    /* The swap chain and its buffers, the recorders, the fence, the queue and
+     * the device are the GPU layer's: gpu_destroy frees them once the GPU is
+     * idle. */
+    for (u32 i = 0; i < RC_SWAP_MAX; i++) s_rc_swap_image[i].id = 0;
+    s_rc_cmd = NULL;
+    s_rc_swap.id = 0;
+    /* Step C4: the table pools, the texture slots, the staging buffers and
+     * the pool's heaps go with the device. */
+    s_rc_srv_pool.id = s_rc_samp_pool.id = s_rc_blit_pool.id = s_rc_down_pool.id = 0;
+    s_rc_srv_w.v = 0;
+    /* Step C5a: the display targets, the depth buffer, zeta and the
+     * offscreen targets with their views (no RTV or DSV heap is made) go
+     * with the device too, and so do the handles waiting in the grave and
+     * the staging buffers' list (step C8a: emptied, so a device made again
+     * never destroys one of its own by an old handle). */
+    s_rc_grave_n = 0;
+    s_ts_grave_n = 0;
+    if (s_rc_dev) gpu_destroy(s_rc_dev);
+    s_rc_dev = NULL;
+}
+
+/* Step V6: a start that failed (rc_backend_init's -1), undone, so that
+ * today's renderer can start in this process in its place (rsx_out.c): the
+ * hooks set to NULL, the device and all on it, and the window, gone before
+ * this returns, with its class, which today's renderer registers under the
+ * same name (a class left registered would give today's window this
+ * file's window procedure). */
+static void rc_abort_init(void)
+{
+    extern void (*g_gcm_fifo_flip_hook)(void);
+    extern void (*g_rcap_mark_hook)(int end);
+    g_gcm_fifo_flip_hook = NULL;
+    g_rsx_report_hook = NULL;
+    g_rcap_mark_hook = NULL;
+    s_d3d.pipeline_ready = 0;
+    s_pso_lib_on = 0;
+    rc_release_device();
+    InterlockedExchange(&s_overlay_on, 0);   /* (the close below must not reach the host, nor ask first) */
+#ifdef _WIN32
+    if (s_d3d.hwnd) {
+        HWND const w = s_d3d.hwnd;
+        if (s_window_thread) {
+            PostMessageA(w, WM_CLOSE, 0, 0);
+            for (int i = 0; i < 2000 && IsWindow(w); i++) Sleep(1);   /* (2 s at most) */
+        } else {
+            DestroyWindow(w);
+        }
+        if (IsWindow(w)) printf("[D3D12] the failed start's window did not close\n");
+    }
+    if (!UnregisterClassA("ps3recomp_d3d12", GetModuleHandle(NULL)) && GetLastError() != ERROR_CLASS_DOES_NOT_EXIST)
+        printf("[D3D12] the failed start's window class stays registered (error %lu)\n", (unsigned long)GetLastError());
+#else
+    if (s_d3d.hwnd && !win_close_wait()) printf("[D3D12] the failed start's window did not close\n");
+#endif
+    s_d3d.hwnd = NULL;
+    free(s_d3d.draws);   /* (the draw records, if a start before this one made them: another renderer runs) */
+    s_d3d.draws = NULL;
+}
+
+static void rc_overlay_repaint(int on)
+{
+    InterlockedExchange(&s_overlay_repaint, on ? 1 : 0);
+}
+
+static void rc_overlay_wake(void)
+{
+    InterlockedExchange(&s_overlay_wake, 1);
+}
+
+/* DWM's timing: the composition's refresh period and the time of its last
+ * vblank, in performance counter ticks; 0 when it cannot say. The window's
+ * display mode: its refresh in whole Hz (143.9 Hz reads 143 or 144), 0 when
+ * not known. Any thread. */
+#ifdef _WIN32
+static long long dwm_timing(long long freq, long long* vblank)
+{
+    typedef HRESULT (WINAPI *timing_fn)(HWND, DWM_TIMING_INFO*);
+    static timing_fn volatile timing;
+    static volatile LONG state;   /* 0 = not loaded yet, 1 = loaded, -1 = missing */
+    if (!state) {
+        HMODULE dwm = LoadLibraryExA("dwmapi.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);   /* (Windows' own only) */
+        timing = dwm ? (timing_fn)(void*)GetProcAddress(dwm, "DwmGetCompositionTimingInfo") : NULL;
+        InterlockedExchange(&state, timing ? 1 : -1);
+    }
+    *vblank = 0;
+    if (state < 0) return 0;
+    DWM_TIMING_INFO ti;
+    memset(&ti, 0, sizeof ti);
+    ti.cbSize = sizeof ti;
+    if (FAILED(timing(NULL, &ti)) || ti.qpcRefreshPeriod < (QPC_TIME)(freq / 1000) ||
+        ti.qpcRefreshPeriod > (QPC_TIME)(freq / 20))
+        return 0;
+    *vblank = (long long)ti.qpcVBlank;
+    return (long long)ti.qpcRefreshPeriod;
+}
+
+static int display_mode_hz(void)
+{
+    if (!s_d3d.hwnd) return 0;
+    MONITORINFOEXW mi;
+    memset(&mi, 0, sizeof mi);
+    mi.cbSize = sizeof mi;
+    DEVMODEW dm;
+    memset(&dm, 0, sizeof dm);
+    dm.dmSize = sizeof dm;
+    if (GetMonitorInfoW(MonitorFromWindow(s_d3d.hwnd, MONITOR_DEFAULTTONEAREST), (MONITORINFO*)&mi) &&
+        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 20 &&
+        dm.dmDisplayFrequency < 1000)
+        return (int)dm.dmDisplayFrequency;
+    return 0;
+}
+#else
+static int display_mode_hz(void)
+{
+    return (int)s_refresh_hz;   /* (window thread, win_refresh_note) */
+}
+#endif
+
+/* The display's refresh: its period and the time of a vblank, in performance
+ * counter ticks. DWM's timing, read again every quarter second (the window
+ * can move to another display); without it the window's display mode gives
+ * the period and *vblank is 0 (unknown). Render thread. */
+static long long refresh_period(long long now, long long freq, long long* vblank)
+{
+    static long long period, vb, read_at;
+    if (!period || now - read_at >= freq / 4) {
+        read_at = now;
+        vb = 0;
+        long long p = 0;
+#ifdef _WIN32
+        p = dwm_timing(freq, &vb);
+#endif
+        if (!p) {
+            const int hz = display_mode_hz();
+            if (hz) p = freq / hz;
+        }
+        period = p ? p : freq / 60;
+    }
+    *vblank = vb;
+    return period;
+}
+
+/* For rc_display_timing: the window's display mode in Hz, read again
+ * every half second (the window can move to another display). */
+static int display_hz_cached(long long now, long long freq)
+{
+    static volatile long long at;
+    static volatile LONG hz;
+    if (!at || now - at >= freq / 2) {
+        InterlockedExchange(&hz, (LONG)display_mode_hz());
+        InterlockedExchange64(&at, now);
+    }
+    return (int)hz;
+}
+
+static int period_near(long long p, long long nominal)
+{
+    const long long d = p > nominal ? p - nominal : nominal - p;
+    return d * 1000 <= nominal * 15;   /* 1.5%: the mode's whole Hz against the real rate */
+}
+
+static long long rc_display_timing(long long* vblank)
+{
+    LARGE_INTEGER f, q;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&q);
+    const int hz = display_hz_cached(q.QuadPart, f.QuadPart);
+    const long long nominal = hz ? f.QuadPart / hz : 0;
+    const long long sp = s_disp_period, svb = s_disp_vblank, sat = s_disp_at;
+    if (sp && svb && q.QuadPart - sat < 2 * f.QuadPart && (!nominal || period_near(sp, nominal))) {
+        *vblank = svb;
+        return sp;
+    }
+#ifdef _WIN32
+    long long dvb = 0;
+    const long long dp = dwm_timing(f.QuadPart, &dvb);
+    if (dp && (!nominal || period_near(dp, nominal))) {
+        *vblank = dvb;
+        return dp;
+    }
+#endif
+    *vblank = 0;
+    return nominal;
+}
+
+static int rc_display_refresh_mhz(void)
+{
+    long long vb;
+    const long long p = rc_display_timing(&vb);
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    return p ? (int)((f.QuadPart * 1000 + p / 2) / p) : 0;
+}
+
+static int rc_display_mode_mhz(void)
+{
+    LARGE_INTEGER f, q;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&q);
+    return display_hz_cached(q.QuadPart, f.QuadPart) * 1000;
+}
+
+static int rc_display_shown_mhz(void)
+{
+    LARGE_INTEGER f, q;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&q);
+    const long long sp = s_disp_period, sat = s_disp_at;
+    if (!sp || q.QuadPart - sat >= 2 * f.QuadPart) return 0;
+    return (int)((f.QuadPart * 1000 + sp / 2) / sp);
+}
+
+/* Is a frame presented and not yet shown? 1 / 0, or -1 when the swap
+ * chain's statistics cannot say. */
+static int present_queued(void)
+{
+    gpu_present_stats st;
+    memset(&st, 0, sizeof st);
+    if (gpu_swap_stats(s_rc_dev, s_rc_swap, &st) || !st.present_count)
+        return -1;
+    const UINT ahead = st.last_present_count - st.present_count;
+    if (ahead > FRAME_COUNT + 1) return -1;   /* (statistics that do not follow this swap chain) */
+    return ahead != 0;
+}
+
+static void rc_overlay_tick(void)
+{
+    /* Woken (rc_overlay_wake) with repaints off: the hold is made here
+     * from the last frame shown, once the game has stopped presenting. */
+    const int wake = s_overlay_wake && !s_overlay_repaint;
+    if ((!s_overlay_repaint && !wake) || !s_overlay_on || !s_overlay.frame || !s_d3d.initialized ||
+        !repaint_knob() || !knob_present() || s_session_locked || window_hidden())
+        return;
+    const int held = s_hold_valid && s_hold_w == s_d3d.host_w && s_hold_h == s_d3d.host_h;
+    if (!held && !wake) return;   /* (held before RSX_SCALE moved) */
+    LARGE_INTEGER q, f;
+    QueryPerformanceCounter(&q);
+    QueryPerformanceFrequency(&f);
+    const long long now = q.QuadPart;
+    if (wake) {
+        if (now - s_last_present_qpc < f.QuadPart / 4) return;   /* (its next frame runs the hook) */
+        if (s_shown_fi >= FRAME_COUNT && !held) return;          /* (nothing shown yet to draw over) */
+        InterlockedExchange(&s_overlay_wake, 0);
+    }
+    long long vblank = 0;
+    const long long period = refresh_period(now, f.QuadPart, &vblank);
+    if (wake) {
+        /* (at once: the game has not presented for a quarter of a second) */
+    } else if (vblank && vblank <= now) {
+        /* Late in a refresh that has no frame yet: a frame the game presents
+         * earlier in it shows instead, and this one still makes the vblank. */
+        const long long last_vblank = vblank + (now - vblank) / period * period;
+        if (s_last_present_qpc >= last_vblank || now - last_vblank < period / 2) return;
+    } else if (now - s_last_present_qpc < period) {
+        return;
+    }
+    /* (presenting now would wait for it, and hold up the game's next frame;
+     * a game that has stopped has none, and a window the compositor is not
+     * showing never takes it) */
+    if (now - s_game_frame_qpc < f.QuadPart / 4 && present_queued() == 1) return;
+
+    /* The held frame into the game's buffer for this index (cleared by the
+     * next batch anyway), then into the window's as for any frame. */
+    const u32 fi = s_d3d.frame_index;
+    frame_cmd_begin(fi);
+    if (!held) {
+        /* The last frame shown is still in its render target: a frame index
+         * moves only at a Present, so every batch since has drawn into the
+         * other one. */
+        hold_copy(s_shown_fi);
+        if (!s_hold_valid) {
+            gpu_cmd_end(s_rc_dev, s_rc_cmd);
+            return;
+        }
+    }
+    /* (On the recorder just begun, step C6: the hold's handle and the
+     * display target's.) */
+    hold_barriers(fi, GPU_STATE_PRESENT, GPU_STATE_COPY_DEST, GPU_STATE_COMMON, GPU_STATE_COPY_SOURCE);
+    gpu_cmd_copy_texture_whole(s_rc_cmd, s_rc_rt_tex[fi], s_hold_tex);
+    hold_barriers(fi, GPU_STATE_COPY_DEST, GPU_STATE_PRESENT, GPU_STATE_COPY_SOURCE, GPU_STATE_COMMON);
+    s_hdr.frame_t = -1;   /* a held frame: T may hold a later one */
+    blit_to_window(fi);
+    s_shown_fi = fi;
+    frame_cmd_submit();
+    rc_overlay_frame(fi);
+    swap_present(0);
+    s_repaints++;
+    move_to_next_frame();
+    swap_resize();
+}
+
+static void rc_set_overlay(const rsx_d3d12_overlay* overlay)
+{
+    InterlockedExchange(&s_overlay_on, 0);
+    if (overlay) {
+        s_overlay = *overlay;
+        InterlockedExchange(&s_overlay_on, 1);
+    }
+}
+static void rc_set_borderless(int on)
+{
+#ifdef _WIN32
+    if (s_d3d.hwnd) {
+        if (s_window_thread) PostMessageA(s_d3d.hwnd, WM_RSX_BORDERLESS, (WPARAM)!!on, 0);
+        else set_borderless(s_d3d.hwnd, on);
+    }
+#else
+    if (s_d3d.hwnd) win_post(WIN_MAIL_BORDERLESS, !!on);
+#endif
+}
+static int      rc_borderless(void)   { return s_borderless; }
+/* The menu renderer takes the device, the queue and the swap chain's
+ * buffers as the backend's own objects, and the overlay's frame callback
+ * the buffer it draws over: the instance file's hooks (step C8b:
+ * rc_be_device, rc_be_queue, rc_be_image; on D3D12 the GPU layer's own,
+ * borrowed as today's were; none where the menu has no renderer). */
+static void*    rc_device(void)       { return s_rc_dev ? rc_be_device(s_rc_dev) : NULL; }
+static void*    rc_queue(void)        { return s_rc_dev ? rc_be_queue(s_rc_dev) : NULL; }
+static void*    rc_back_buffer(unsigned i)
+{
+    if (i >= s_rc_swap_n || !s_rc_dev || !GPU_VALID(s_rc_swap_image[i])) return NULL;
+    return rc_be_image(s_rc_dev, s_rc_swap_image[i]);
+}
+/* ---- step VM ---- */
+/* The overlay v2 (rsx_out.h): the menu on the core's own device. Its
+ * recorder is slot RC_OVERLAY_SLOT + the frame slot (init_d3d12 makes
+ * 2 * FRAME_COUNT), so the frame slot's wait (frame_slot_wait) covers it
+ * too; it is submitted after the frame's work, before the Present, with the
+ * swap chain's waits as every submit of the frame (frame_cmd_submit). */
+#include "rsx_out.h"
+#define RC_OVERLAY_SLOT FRAME_COUNT
+static rsx_out_overlay_gpu s_overlay_gpu;
+static volatile long       s_overlay_gpu_on;
+static gpu_cmd*            s_overlay_gpu_cmd;    /* open while frame_gpu runs */
+static u32                 s_overlay_gpu_slot;
+
+static void rc_set_overlay_gpu(const rsx_out_overlay_gpu* overlay)
+{
+    InterlockedExchange(&s_overlay_gpu_on, 0);
+    if (overlay && overlay->frame_gpu) {
+        s_overlay_gpu = *overlay;
+        InterlockedExchange(&s_overlay_gpu_on, 1);
+    }
+}
+static struct gpu_device* rc_gpu_device(void) { return s_d3d.initialized ? s_rc_dev : NULL; }
+
+static gpu_fence overlay_gpu_submit(uint32_t flags)
+{
+    gpu_submit_desc how;
+    how.swapchain = s_rc_swap;
+    how.flags = GPU_SUBMIT_ACQUIRE_WAIT | GPU_SUBMIT_PRESENT_SIGNAL | flags;
+    gpu_cmd_end(s_rc_dev, s_overlay_gpu_cmd);
+    return gpu_submit(s_rc_dev, &s_overlay_gpu_cmd, 1, &how);
+}
+
+/* (A wait of 2 s at most, as frame_slot_wait's; 0 at once on a lost device.
+ * A slot the GPU may still run is not opened again: no recorder then.) */
+static struct gpu_cmd* rc_overlay_gpu_flush(void)
+{
+    if (!s_overlay_gpu_cmd) return NULL;
+    const gpu_fence f = overlay_gpu_submit(GPU_SUBMIT_SIGNAL);
+    s_overlay_gpu_cmd = NULL;
+    if (gpu_fence_wait(s_rc_dev, f, 2000)) {
+        printf("[D3D12] overlay: the GPU has not finished its work after 2 s (fence %llu)\n", (unsigned long long)f);
+        return NULL;
+    }
+    s_overlay_gpu_cmd = gpu_cmd_begin(s_rc_dev, s_overlay_gpu_slot);
+    return s_overlay_gpu_cmd;
+}
+
+static unsigned rc_back_buffer_format(void);
+static void overlay_gpu_frame(u32 fi)
+{
+    if (!s_rc_have_image) return;   /* (no image acquired: nothing to draw over) */
+    frame_slot_wait(fi);   /* (the slot's last frame: already passed in a frame's own order) */
+    s_overlay_gpu_slot = RC_OVERLAY_SLOT + fi;
+    s_overlay_gpu_cmd = gpu_cmd_begin(s_rc_dev, s_overlay_gpu_slot);
+    if (!s_overlay_gpu_cmd) return;
+    s_overlay_gpu.frame_gpu(s_overlay_gpu.user, s_overlay_gpu_cmd, s_rc_swap_image[s_rc_image].id,
+                            rc_back_buffer_format(), s_rc_image, s_d3d.win_w, s_d3d.win_h);
+    if (s_overlay_gpu_cmd) overlay_gpu_submit(0);
+    s_overlay_gpu_cmd = NULL;
+}
+
+/* The image the frame was drawn into (step VC1: the acquired one; frame
+ * slot fi's on D3D12). */
+static void rc_overlay_frame(u32 fi)
+{
+    if (s_overlay_gpu_on) {   /* (step VM) */
+        overlay_gpu_frame(fi);
+        return;
+    }
+    (void)fi;
+    s_overlay.frame(s_overlay.user, rc_back_buffer(s_rc_image), s_rc_image, s_d3d.win_w, s_d3d.win_h);
+}
+/* (The end of the menu's objects.) */
+static long     rc_device_lost(long long* qpc)
+{
+    if (qpc) *qpc = s_device_lost_qpc;
+    return s_device_lost;
+}
+static void*    rc_hwnd(void)         { return s_d3d.hwnd; }
+
+static void rc_post_message(unsigned msg, unsigned long long wp, long long lp)
+{
+    if (!s_d3d.hwnd) return;
+#ifdef _WIN32
+    PostMessageA((HWND)s_d3d.hwnd, msg, (WPARAM)wp, (LPARAM)lp);
+#else
+    if (!s_sdl_mail || msg > 0xFFFFu) return;
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = s_sdl_mail;
+    e.user.code = WIN_MAIL_MESSAGE + (Sint32)msg;
+    e.user.data1 = (void*)(uintptr_t)wp;
+    e.user.data2 = (void*)(intptr_t)lp;
+    SDL_PushEvent(&e);
+#endif
+}
+static unsigned rc_back_buffer_count(void)  { return s_d3d.initialized ? s_rc_swap_n : 0; }   /* (step VC1) */
+static unsigned rc_back_buffer_format(void)
+{
+    return (unsigned)(s_hdr.active ? GPU_FORMAT_R16G16B16A16_FLOAT : GPU_FORMAT_R8G8B8A8_UNORM);
+}
+static int rc_hdr(float* ui_scale, int* srgb)
+{
+    if (ui_scale) *ui_scale = s_hdr.active ? hdr_white_nits() / 80.0f : 1.0f;
+    if (srgb) *srgb = knob_hdr_gamma() != 0;
+    return s_hdr.active;
+}
+
+static int rc_backend_pump_messages(void)
+{
+#ifdef _WIN32
+    MSG msg;
+    if (s_window_thread) return s_d3d.window_closed ? -1 : 0;   /* the window thread pumps */
+    while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
+        if (msg.message == WM_QUIT) return -1;
+        TranslateMessage(&msg);
+        DispatchMessageA(&msg);
+    }
+#endif
+    return s_d3d.window_closed ? -1 : 0;   /* (off Windows the window thread waits on SDL's events) */
+}
+
+static void rc_backend_present(void)
+{
+    if (blink_dbg())
+        printf("[PRESENT] draws=%u clears_since_last=%u clear_presents=%u\n",
+               s_d3d.draw_count, s_dbg_clears_since_present, s_clear_presents);
+    s_dbg_clears_since_present = 0;
+
+    /* Once frame-boundary presents are active (d3d12_clear presents each
+     * completed frame as the drain crosses into the next one), the ticker
+     * present would only ever show the partially-accumulated NEXT frame --
+     * that partial present right after the FIFO ring recycle was the visible
+     * blink. Keep the ticker present solely as the boot-time fallback (before
+     * the first framed clear arrives). */
+    if (s_clear_presents > 0)
+        return;
+
+    /* Same display gate as d3d12_present: a batch of offscreen pass work only
+     * (render-to-texture) keeps accumulating until its composite arrives.
+     * Empty batches present only until the first real frame -- after that an
+     * empty present is a flip/drain race and wipes the screen for a frame
+     * (wave: black flashes and layout flicker between frames). */
+    static int s_seen_content = 0;
+    int has_display = (s_d3d.draw_count == 0 && !s_seen_content);
+    for (u32 _i = 0; _i < s_d3d.draw_count && _i < MAX_DRAWS; _i++)
+        if (!s_d3d.draws[_i].is_clear && s_d3d.draws[_i].rt_off == 0) {
+            has_display = 1;
+            break;
+        }
+    /* The guest-framebuffer present needs the pass to run at all. */
+    { static int gfb = -1;
+      if (gfb < 0) { const char* e = getenv("GCM_GUEST_FB"); gfb = e ? 1 : 0; }
+      if (gfb) has_display = 1; }
+    if (s_composite_src) has_display = 1;
+    if (has_display && s_d3d.draw_count > 0) s_seen_content = 1;
+
+    /* VP_SUBMIT=<N>: has_display gates render_frame() entirely, so a batch whose
+     * records all target an OFFSCREEN rt (rt_off != 0) presents without ever
+     * running the draw pass -- the backbuffer then shows only the clear, which
+     * reads as "nothing rasterizes" from every downstream check. */
+    { static int cap = -1, n = 0;
+      PS3_KNOB(cap, ps3_env_int("VP_SUBMIT", 0));
+      if (cap && n < cap && s_d3d.draw_count) { n++;
+        u32 onscreen = 0, offscreen = 0, clears = 0;
+        for (u32 _i = 0; _i < s_d3d.draw_count && _i < MAX_DRAWS; _i++) {
+            if (s_d3d.draws[_i].is_clear) { clears++; continue; }
+            if (s_d3d.draws[_i].rt_off) offscreen++; else onscreen++;
+        }
+        { /* Which surfaces the batch's draws actually target -- "offscreen=57"
+           * does not say whether they all go to one RT or scatter. */
+          u32 offs[8]; u32 cnt[8]; int nd = 0;
+          for (u32 _i = 0; _i < s_d3d.draw_count && _i < MAX_DRAWS; _i++) {
+              if (s_d3d.draws[_i].is_clear) continue;
+              u32 o = s_d3d.draws[_i].rt_off; int f = -1;
+              for (int _j = 0; _j < nd; _j++) if (offs[_j] == o) { f = _j; break; }
+              if (f < 0) { if (nd < 8) { offs[nd] = o; cnt[nd] = 1; nd++; } }
+              else cnt[f]++;
+          }
+          { u32 vp = 0, novp = 0;
+            for (u32 _i = 0; _i < s_d3d.draw_count && _i < MAX_DRAWS; _i++) {
+                if (s_d3d.draws[_i].is_clear) continue;
+                if (s_d3d.draws[_i].is_vp) vp++; else novp++;
+            }
+            /* The execution loop skips anything without is_vp, so a batch full
+             * of !is_vp records is counted, gated and then never drawn. */
+            fprintf(stderr, "[PRESENTGATE] is_vp=%u not_vp=%u%c", vp, novp, 10); }
+          fprintf(stderr, "[PRESENTGATE] targets:");
+          for (int _j = 0; _j < nd; _j++)
+              fprintf(stderr, " 0x%08X x%u", offs[_j], cnt[_j]);
+          fprintf(stderr, "%c", 10); }
+        fprintf(stderr, "[PRESENTGATE] records=%u onscreen=%u offscreen=%u clears=%u"
+                        " has_display=%d seen_content=%d -> render_frame=%s\n",
+                s_d3d.draw_count, onscreen, offscreen, clears, has_display,
+                s_seen_content, (s_d3d.initialized && has_display) ? "YES" : "SKIPPED"); } }
+
+    /* Execute the batch whenever it has draws. Gating the whole call on
+     * has_display meant a render-to-texture pass -- every draw targeting an
+     * offscreen surface -- was DISCARDED rather than deferred, so the texture
+     * it produces was never written and whatever sampled it later read an
+     * empty resource. Only the Present needs onscreen content. */
+    if (s_d3d.initialized && (has_display || s_d3d.draw_count > 0)) {
+        { extern void rsx_reset_upload_claims(void);
+          static int remap = -1;
+          PS3_KNOB(remap, ps3_env_int("TEX_REMAP", 0));
+          if (remap) rsx_reset_upload_claims(); }
+        s_present_this_frame = has_display;
+        render_frame();
+        s_present_this_frame = 1;
+    }
+}
+
+/* The offline exports (rsx_shader_precompile, setup's shader pass): the
+ * texts are rsxc_shader.c's and the cache is the instance file's
+ * (rc_be_cache_put; on D3D12 the compile service's, step C3a, which is
+ * today's .dxbc cache; none on null). */
+static int rc_shader_hlsl(int fragment, const u8* ucode, u32 ucode_len, u32 vp_start_slot,
+                          int exp32, u32 cube_mask, u32 d2c_mask, char* out, u32 cap)
+{
+    return rsxc_shader_hlsl(fragment, ucode, ucode_len, vp_start_slot, exp32, cube_mask, d2c_mask, out, cap);
+}
+static u64 rc_program_hash64(int fragment, const u8* ucode, u32 ucode_len)
+{
+    return rsxc_program_hash64(fragment, ucode, ucode_len);
+}
+static u64 rc_shader_key(int fragment, const char* hlsl) { return rsxc_shader_key(fragment, hlsl); }
+static int rc_shader_cache_put(int fragment, const char* hlsl)
+{
+    gpu_sc_perf(perf_on());
+    return rc_be_cache_put(fragment ? GPU_SC_PS : GPU_SC_VS, hlsl);
+}
+static const char* rc_shader_cache_path(void) { return shader_cache_dir(); }
+static int rc_shader_fp_variants(const u8* ucode, u32 ucode_len, u32* out, int max)
+{
+    return rsxc_shader_fp_variants(ucode, ucode_len, out, max);
+}
+

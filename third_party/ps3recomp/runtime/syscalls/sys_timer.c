@@ -1,0 +1,772 @@
+/*
+ * ps3recomp - Timer and time syscalls (implementation)
+ */
+
+#include "sys_timer.h"
+#include "ps3emu/ps3_knob.h"
+#include "sys_event.h"
+#include "../memory/vm.h"
+#include "../platform/plat.h"
+#include <stdlib.h>   /* getenv -- an implicit decl returns int, truncating the pointer */
+#include <string.h>
+#include <stdlib.h>
+
+/* ---------------------------------------------------------------------------
+ * Globals
+ * -----------------------------------------------------------------------*/
+sys_timer_info g_sys_timers[SYS_TIMER_MAX];
+
+int64_t lv2_usec_deadline(uint64_t usec)
+{
+    const uint64_t q = (uint64_t)plat_clock_freq();
+    return plat_clock_now() + (int64_t)((usec * q) / 1000000ULL);
+}
+
+int lv2_deadline_passed(int64_t deadline)
+{
+    return plat_clock_now() >= deadline;
+}
+
+/* ---------------------------------------------------------------------------
+ * The guest clocks below have one origin rule on every platform: each counts
+ * from its own first reading, as both always have on Windows. A PS3 title
+ * starts seconds after the console boots, so it sees small values; counting
+ * from the host's boot, as Linux and macOS did, gave it days of uptime, and
+ * a title that keeps system time in 32 bits of microseconds wraps 71 minutes
+ * into that.
+ * -----------------------------------------------------------------------*/
+
+/* ---------------------------------------------------------------------------
+ * PPU timebase (mftb/mftbu) -- THE guest clock.
+ *
+ * One global monotonic counter scaled to the PS3 timebase (79.8 MHz),
+ * anchored at first use. The old lifter emission was a per-call-site
+ * static that advanced 16667 ticks PER READ -- not a clock at all: every
+ * guest timing loop (media pacers, throttles, profilers) computed garbage
+ * from it, and each call site had a PRIVATE counter that only moved when
+ * polled. Overflow-safe split multiply (rem < freq, so rem * 79.8e6 stays
+ * under 2^63 for any clock up to 100 GHz).
+ * -----------------------------------------------------------------------*/
+uint64_t ppu_timebase_now(void)
+{
+    static int64_t t0 = 0;
+    const uint64_t q = (uint64_t)plat_clock_freq();
+    const int64_t now = plat_clock_now();
+    if (!t0) t0 = now;   /* benign race: same anchor either way */
+    return plat_ticks_scale((uint64_t)(now - t0), q, PS3_TIMEBASE_FREQ);
+}
+
+/* ---------------------------------------------------------------------------
+ * Guest system time, in microseconds.
+ *
+ * sys_time_get_system_time (runtime/ppu/ppu_sysprx.cpp) returns this, and so
+ * does every guest-visible timestamp that is meant to be compared with it:
+ * cellGcmGetLastFlipTime on hardware is the system time of the last flip.
+ * It counts from the first call, as sys_time_get_system_time always has on
+ * Windows; the compare-exchange keeps two first callers on one origin.
+ * -----------------------------------------------------------------------*/
+uint64_t lv2_system_time_usec(void)
+{
+    static volatile int64_t s_origin = 0;
+    const uint64_t q = (uint64_t)plat_clock_freq();
+    const int64_t now = plat_clock_now();
+    int64_t origin = s_origin;
+    if (!origin) {
+        int64_t prev = plat_atomic_cas64(&s_origin, now, 0);
+        origin = prev ? prev : now;
+    }
+    return plat_ticks_scale((uint64_t)(now - origin), q, 1000000ull);
+}
+
+static void write_be32(uint32_t addr, uint32_t val)
+{
+    uint32_t* p = (uint32_t*)vm_to_host(addr);
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ || defined(_WIN32)
+    val = ((val >> 24) & 0xFF) | ((val >> 8) & 0xFF00) |
+          ((val <<  8) & 0xFF0000) | ((val << 24) & 0xFF000000u);
+#endif
+    *p = val;
+}
+
+static void write_be64(uint32_t addr, uint64_t val)
+{
+    uint64_t* p = (uint64_t*)vm_to_host(addr);
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ || defined(_WIN32)
+    val = ((val >> 56) & 0xFFULL) |
+          ((val >> 40) & 0xFF00ULL) |
+          ((val >> 24) & 0xFF0000ULL) |
+          ((val >>  8) & 0xFF000000ULL) |
+          ((val <<  8) & 0xFF00000000ULL) |
+          ((val << 24) & 0xFF0000000000ULL) |
+          ((val << 40) & 0xFF000000000000ULL) |
+          ((val << 56) & 0xFF00000000000000ULL);
+#endif
+    *p = val;
+}
+
+/* ---------------------------------------------------------------------------
+ * sys_timer_usleep
+ *
+ * r3 = microseconds
+ * -----------------------------------------------------------------------*/
+/* Set by a title whose lift keeps a guest shadow call stack (--shadow-stack):
+ * dumps the CALLING thread's guest stack. NULL otherwise. */
+void (*g_shadow_stack_dump_hook)(void) = 0;
+
+/* A usleep of at most USLEEP_YIELD_US microseconds (default 10; 0 = none)
+ * is a yield, not idling: see the sub-millisecond branch below. */
+static uint64_t usleep_yield_us(void)
+{
+    static int s_yield = -1;
+    PS3_KNOB(s_yield, getenv("USLEEP_YIELD_US") ? atoi(getenv("USLEEP_YIELD_US")) : 10);
+    return s_yield > 0 ? (uint64_t)s_yield : 0;
+}
+
+/* Such a yield waits in place, as RPCS3's does. USLEEP_SHORT_SWITCH=1 is the
+ * old behaviour: it hands the core to another ready thread (plat_yield). */
+static int usleep_short_in_place(void)
+{
+    static int s_on = -1;
+    PS3_KNOB(s_on, getenv("USLEEP_SHORT_SWITCH") ? 0 : 1);
+    return s_on;
+}
+
+/* Short-usleep idle detection (see the sub-millisecond branch below). */
+static PLAT_THREAD_LOCAL int64_t t_last_end;
+static PLAT_THREAD_LOCAL unsigned t_streak;
+static PLAT_THREAD_LOCAL plat_timer t_timer;   /* opened on first use */
+
+int64_t sys_timer_usleep(ppu_context* ctx)
+{
+    uint64_t usec = LV2_ARG_U64(ctx, 0);
+    /* USLEEP_SHADOW=<guest tid>[:<n>]: after that thread's n-th usleep (default
+     * 200), dump its guest shadow call stack once. A usleep poll's lr is the
+     * sleep helper; the loop that actually polls is further up, and only the
+     * thread itself can read its shadow stack. */
+    { static long s_tid = -2, s_at = 200; static long s_cnt = 0;
+      if (s_tid == -2) { const char* e = getenv("USLEEP_SHADOW"); s_tid = -1;
+          if (e) { char* end = 0; s_tid = strtol(e, &end, 0);
+                   if (end && *end == ':') s_at = strtol(end + 1, 0, 0); } }
+      if (s_tid >= 0 && (long)ctx->thread_id == s_tid && ++s_cnt == s_at &&
+          g_shadow_stack_dump_hook) {
+          fprintf(stderr, "[usleep-shadow] tid=%ld after %ld usleeps:\n", s_tid, s_at);
+          g_shadow_stack_dump_hook();
+          /* The poll loop's registers survive the leaf sleep helper: print the
+           * callee-saved ones and the object at each, which is what it polls. */
+          for (int r = 24; r < 32; r++) {
+              const uint32_t o = (uint32_t)ctx->gpr[r];
+              fprintf(stderr, "   r%d=0x%08X", r, o);
+              if (vm_base && o >= 0x10000u && o < 0xF0000000u) {
+                  fprintf(stderr, " [");
+                  for (int w = 0; w < 36; w++) {
+                      const uint8_t* q = vm_base + o + (unsigned)w * 4u;
+                      fprintf(stderr, "%s%08X", w ? " " : "",
+                              ((uint32_t)q[0] << 24) | ((uint32_t)q[1] << 16) |
+                              ((uint32_t)q[2] << 8) | (uint32_t)q[3]);
+                  }
+                  fprintf(stderr, "]");
+              }
+              fprintf(stderr, "\n");
+          }
+          fflush(stderr); } }
+    { extern unsigned long long ps3_qpc_us(void);
+      static int n=0; if (n < 60 && ++n)
+        fprintf(stderr, "[WAIT] t=%lluus timer_usleep(%llu us) lr=0x%08llX cia=0x%08llX\n", ps3_qpc_us(),
+        (unsigned long long)usec, (unsigned long long)ctx->lr, (unsigned long long)ctx->cia); }
+    /* PS3_POLLTOP=<seconds>: name the usleep poll sites.
+     *
+     * A title that is "hung" is usually not blocked on anything -- every thread
+     * is spinning on sys_timer_usleep waiting for a flag, and [BLOCKSUM] only
+     * says "syscall 141, 12s". This histograms the callers over a window and
+     * prints the top ones, so the answer is a guest address rather than a
+     * count. Keyed on ctx->lr: a host-stack backtrace through lifted code has
+     * no unwind tables and invents chains (see the Guitar Hero III writeup),
+     * and lr is the only guest chain that survives.
+     *
+     * Deliberately unlocked: the counts are a diagnostic, and a lost increment
+     * under a race cannot change which site is at the top of a 30k-per-second
+     * poll. */
+    { static long s_pt = -1;
+      if (s_pt < 0) { const char* e = getenv("PS3_POLLTOP");
+                      s_pt = e ? (long)strtoul(e, 0, 10) : 0;
+                      if (s_pt < 0) s_pt = 0; }
+      if (s_pt > 0) {
+        enum { PT_MAX = 128 };
+        static uint32_t pt_lr[PT_MAX]; static uint32_t pt_n[PT_MAX];
+        static uint64_t pt_us[PT_MAX]; static int pt_used = 0;
+        static uint32_t pt_tid[PT_MAX];
+        static unsigned long long pt_win = 0;
+        /* Lifts that do not maintain ctx->lr at call sites leave it 0; their
+         * ctx->cia is the call site of the sleep helper, which is as good. */
+        uint32_t lr = ctx->lr ? (uint32_t)ctx->lr : (uint32_t)ctx->cia;
+        int i = 0;
+        for (; i < pt_used; i++) if (pt_lr[i] == lr) break;
+        if (i == pt_used && pt_used < PT_MAX) {
+            pt_lr[pt_used] = lr;
+            /* The thread matters as much as the site: "who is waiting" is the
+             * half that says whether a poll is the engine idling or the main
+             * thread stuck. */
+            pt_tid[pt_used] = (uint32_t)ctx->thread_id;
+            pt_used++;
+        }
+        if (i < PT_MAX) { pt_n[i]++; pt_us[i] += usec; }
+        { extern unsigned long long ps3_qpc_us(void);
+          unsigned long long now = ps3_qpc_us();
+          if (!pt_win) pt_win = now;
+          else if (now - pt_win >= (unsigned long long)s_pt * 1000000ull) {
+            fprintf(stderr, "--- usleep poll sites (last %lds) ---\n", s_pt);
+            for (int k = 0; k < 8; k++) {
+              int best = -1;
+              for (int j = 0; j < pt_used; j++)
+                if (pt_n[j] && (best < 0 || pt_n[j] > pt_n[best])) best = j;
+              if (best < 0) break;
+              fprintf(stderr, "  %8u calls  %6llums slept  tid=%-3u lr=0x%08X\n",
+                      pt_n[best], (unsigned long long)(pt_us[best] / 1000),
+                      pt_tid[best], pt_lr[best]);
+              pt_n[best] = 0;
+            }
+            fflush(stderr);
+            for (int j = 0; j < pt_used; j++) { pt_n[j] = 0; pt_us[j] = 0; }
+            pt_win = now;
+          } } } }
+
+    /* PS3_WAIT_OBJ=<lr-hex>: when a usleep spin is reached from this return
+     * address, dump the registers and the object they point at. A poll loop
+     * tells you WHERE it is spinning; this tells you WHAT it is spinning on,
+     * which is the part you actually need to find who never releases it. */
+    { static long s_wo = -1;
+      if (s_wo < 0) { const char* e = getenv("PS3_WAIT_OBJ");
+                      s_wo = e ? (long)strtoul(e, 0, 16) : 0; }
+      /* Match the CIA as well as the LR: our lifted syscall path leaves ctx->lr
+       * at 0 for these call sites, so an lr-keyed probe can never fire there --
+       * and the usleep log prints cia, which is what one actually has to hand. */
+      if (s_wo && ((uint32_t)ctx->lr == (uint32_t)s_wo ||
+                   (uint32_t)ctx->cia == (uint32_t)s_wo)) {
+        static int _n = 0;
+        if (_n < 8 && ++_n) {
+          /* Dump the words at EVERY plausible object register, not just r29.
+           * Which register holds the object is per-title -- r29 was right for
+           * the title this was written for and is a spin COUNTER in Guitar
+           * Hero III, where the object is in r30/r31. Printing one guess makes
+           * the tool silently report the wrong memory as "the thing it waits
+           * on", which is worse than printing nothing. */
+          fprintf(stderr, "[wait-obj] lr=0x%08X sleep=%lluus", (uint32_t)ctx->lr,
+                  (unsigned long long)usec);
+          static const int regs[] = { 28, 29, 30, 31, 3 };
+          for (unsigned ri = 0; ri < sizeof regs / sizeof regs[0]; ri++) {
+            const int r = regs[ri];
+            const uint32_t o = (uint32_t)ctx->gpr[r];
+            fprintf(stderr, "  r%d=0x%08X", r, o);
+            /* Only deref something that looks like a guest pointer: a small
+             * integer is a count, and dumping "memory at 4" is noise. */
+            if (vm_base && o >= 0x10000u) {
+              fprintf(stderr, "[");
+              for (int w = 0; w < 4; w++) {
+                const uint8_t* q = vm_base + o + (unsigned)w * 4u;
+                uint32_t v = ((uint32_t)q[0] << 24) | ((uint32_t)q[1] << 16) |
+                             ((uint32_t)q[2] << 8)  | (uint32_t)q[3];
+                fprintf(stderr, "%s%08X", w ? " " : "", v);
+              }
+              fprintf(stderr, "]");
+            }
+          }
+          fprintf(stderr, "\n"); fflush(stderr);
+        } } }
+
+    /* POLLSITE: resolve the host chain of the 1ms poller (LBP bringup) to
+     * guest functions -- names the stage that is starving. */
+    { static int _ps = -1; PS3_KNOB(_ps, getenv("POLLSITE") ? 12 : 0);
+      if (_ps > 0 && usec == 1000) { _ps--;
+        extern void ppu_log_host_chain(const char*);
+        ppu_log_host_chain("usleep1ms"); } }
+
+    if (usec >= 1000) {
+        plat_sleep_us(usec);
+    } else if (usec > 0) {
+        /* Sub-millisecond sleep. A plain sleep rounds up to the ~0.5-1 ms
+         * scheduler quantum on Windows (and adds the timer slack, 50 us by
+         * default, on Linux), far too coarse for a guest that relies on
+         * accurate microsecond pacing -- a short usleep() spin waiting on
+         * another thread to make progress otherwise collapses to a single yield
+         * and busy-spins at full speed (so the wait is effectively a no-op).
+         * Busy-wait to a precise clock deadline, yielding inside the spin
+         * (plat_yield) so a sibling host thread the guest may be waiting on
+         * still gets the core. Mirrors RPCS3's "Usleep Only" TSC busy-tail.
+         *
+         * ...but a thread that does nothing BUT short sleeps is idle-polling a
+         * flag, and spinning pinned a core per poller (Demon's Souls'
+         * HighGraphics waits out each frame in usleep(30) loops). After 64
+         * back-to-back short sleeps -- each starting within 200 us of the
+         * previous one's end -- sleep for real on the thread's timer
+         * (~0.5 ms granularity on Windows) until the thread does something
+         * else. Short one-off waits keep the precise spin. USLEEP_SPIN=1
+         * restores the old always-spin behaviour.
+         *
+         * A sleep of a few microseconds is a yield, not idling: Havok's job
+         * queue polls its SPU jobs with usleep(1) while the main thread waits
+         * for the physics step, and on the timer each poll came back up to
+         * 0.5 ms late: after a breakable broke, step frames took up to 54 ms
+         * (21 at most with the spin). Sleeps of at most USLEEP_YIELD_US
+         * (default 10; 0 = off) keep the spin in a streak too.
+         *
+         * Those yields also wait in place, without a yield to the scheduler.
+         * A yield hands the core to any thread ready on it, and Havok's poller
+         * then waited behind it for a whole quantum: about 1 in 40 of its
+         * usleep(1) calls took 0.05-1.7 ms, and the SPU tasks it feeds jobs
+         * to waited with it. */
+        const int64_t start = plat_clock_now();
+        { static int s_spin = -1;
+          PS3_KNOB(s_spin, getenv("USLEEP_SPIN") ? 1 : 0);
+          const int64_t gap_ticks = (int64_t)(200 * (uint64_t)plat_clock_freq() / 1000000ULL);
+          if (t_last_end && start - t_last_end <= gap_ticks) t_streak++;
+          else t_streak = 0;
+          if (!s_spin) plat_timer_open(&t_timer);
+          if (!s_spin && t_streak >= 64 && usec > usleep_yield_us()) {
+              if (plat_timer_is_open(&t_timer)) {
+                  plat_timer_sleep_us(&t_timer, usec);
+                  t_last_end = plat_clock_now();
+                  return CELL_OK;
+              }
+          }
+          /* A long sub-ms sleep that is not part of a streak (Demon's Souls'
+           * audio streamer: usleep(800) x3 between event-flag waits, ~330/s)
+           * spun its whole length in SwitchToThread -- half a core in the
+           * kernel. plat_sleep_precise sleeps all but the last
+           * USLEEP_SPIN_TAIL_US on the timer, then spins the tail to the same
+           * deadline. The tail covers the timer's wake latency: Windows'
+           * fires on ~0.5 ms boundaries, so a 250 us tail let usleep(800)
+           * average 1040 us; 500 gives ~830 us at ~13% of a core (was 50%).
+           * -1 disables the timer part. Needs a precise timer; Windows'
+           * plain one rounds to the 1 ms tick and would oversleep. */
+          { static int s_tail = -1;
+            PS3_KNOB(s_tail, getenv("USLEEP_SPIN_TAIL_US") ? atoi(getenv("USLEEP_SPIN_TAIL_US")) : 500);
+            const int in_place = usec <= usleep_yield_us() && usleep_short_in_place();
+            t_last_end = plat_sleep_precise(&t_timer, start, usec, s_spin ? -1 : s_tail, in_place);
+          }
+        }
+    }
+
+    return CELL_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * sys_timer_sleep
+ *
+ * r3 = seconds
+ * -----------------------------------------------------------------------*/
+int64_t sys_timer_sleep(ppu_context* ctx)
+{
+    uint32_t sec = LV2_ARG_U32(ctx, 0);
+
+#ifdef _WIN32
+    Sleep(sec * 1000);
+#else
+    sleep(sec);
+#endif
+
+    return CELL_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * sys_time_get_current_time
+ *
+ * r3 = pointer to receive seconds (u64*)
+ * r4 = pointer to receive nanoseconds (u64*)
+ * -----------------------------------------------------------------------*/
+int64_t sys_time_get_current_time(ppu_context* ctx)
+{
+    uint32_t sec_addr  = LV2_ARG_PTR(ctx, 0);
+    uint32_t nsec_addr = LV2_ARG_PTR(ctx, 1);
+
+    uint64_t sec, nsec;
+
+#ifdef _WIN32
+    /* The performance counter, not the time of day: what this has always
+     * returned on Windows. */
+    const int64_t freq = plat_clock_freq();
+    const int64_t now = plat_clock_now();
+
+    /* Convert QPC to seconds + nanoseconds */
+    sec  = (uint64_t)(now / freq);
+    uint64_t remainder = (uint64_t)(now % freq);
+    nsec = (remainder * 1000000000ULL) / (uint64_t)freq;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    sec  = (uint64_t)ts.tv_sec;
+    nsec = (uint64_t)ts.tv_nsec;
+#endif
+
+    if (sec_addr != 0) {
+        write_be64(sec_addr, sec);
+    }
+    if (nsec_addr != 0) {
+        write_be64(nsec_addr, nsec);
+    }
+
+    return CELL_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * sys_time_get_timebase_frequency
+ *
+ * Returns the PS3 timebase frequency in r3.
+ * -----------------------------------------------------------------------*/
+int64_t sys_time_get_timebase_frequency(ppu_context* ctx)
+{
+    (void)ctx;
+    return (int64_t)PS3_TIMEBASE_FREQ;
+}
+
+/* ---------------------------------------------------------------------------
+ * Periodic timer thread
+ * -----------------------------------------------------------------------*/
+
+/* Forward declaration */
+static void timer_send_event(sys_timer_info* t);
+
+#ifdef _WIN32
+static DWORD WINAPI timer_thread_proc(LPVOID param)
+{
+    sys_timer_info* t = (sys_timer_info*)param;
+
+    while (t->running) {
+        DWORD ms = (DWORD)(t->period_usec / 1000);
+        if (ms == 0) ms = 1;
+
+        DWORD result = WaitForSingleObject(t->stop_event, ms);
+        if (result == WAIT_OBJECT_0) {
+            break; /* stop signaled */
+        }
+
+        if (t->running) {
+            timer_send_event(t);
+        }
+    }
+
+    return 0;
+}
+#else
+static void* timer_thread_proc(void* param)
+{
+    sys_timer_info* t = (sys_timer_info*)param;
+
+    pthread_mutex_lock(&t->mtx);
+    while (!t->stop_flag) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec  += (time_t)(t->period_usec / 1000000);
+        ts.tv_nsec += (long)((t->period_usec % 1000000) * 1000);
+        if (ts.tv_nsec >= 1000000000L) {
+            ts.tv_sec++;
+            ts.tv_nsec -= 1000000000L;
+        }
+
+        int rc = pthread_cond_timedwait(&t->cv, &t->mtx, &ts);
+        if (t->stop_flag) break;
+
+        if (rc == ETIMEDOUT) {
+            pthread_mutex_unlock(&t->mtx);
+            timer_send_event(t);
+            pthread_mutex_lock(&t->mtx);
+        }
+    }
+    pthread_mutex_unlock(&t->mtx);
+
+    return NULL;
+}
+#endif
+
+static void timer_send_event(sys_timer_info* t)
+{
+    if (t->event_queue_id <= 0 || t->event_queue_id > SYS_EVENT_QUEUE_MAX)
+        return;
+
+    sys_event_queue_info* q = &g_sys_event_queues[t->event_queue_id - 1];
+    if (!q->active)
+        return;
+
+    sys_event_t evt;
+    evt.source = t->source;
+    evt.data1  = t->data1;
+    evt.data2  = 0;
+    evt.data3  = 0;
+
+    /* Push event (ignore if queue full) */
+#ifdef _WIN32
+    EnterCriticalSection(&q->lock);
+#else
+    pthread_mutex_lock(&q->lock);
+#endif
+
+    if (q->count < q->capacity) {
+        q->buffer[q->tail] = evt;
+        q->tail = (q->tail + 1) % q->capacity;
+        q->count++;
+#ifdef _WIN32
+        WakeConditionVariable(&q->not_empty);
+#else
+        pthread_cond_signal(&q->not_empty);
+#endif
+    }
+
+#ifdef _WIN32
+    LeaveCriticalSection(&q->lock);
+#else
+    pthread_mutex_unlock(&q->lock);
+#endif
+}
+
+/* ---------------------------------------------------------------------------
+ * sys_timer_create
+ *
+ * r3 = pointer to receive timer ID (u32*)
+ * -----------------------------------------------------------------------*/
+int64_t sys_timer_create(ppu_context* ctx)
+{
+    uint32_t id_out_addr = LV2_ARG_PTR(ctx, 0);
+
+    int slot = -1;
+    for (int i = 0; i < SYS_TIMER_MAX; i++) {
+        if (!g_sys_timers[i].active) { slot = i; break; }
+    }
+    if (slot < 0)
+        return (int64_t)(int32_t)CELL_EAGAIN;
+
+    sys_timer_info* t = &g_sys_timers[slot];
+    memset(t, 0, sizeof(*t));
+    t->active  = 1;
+    t->running = 0;
+    t->event_queue_id = 0;
+
+#ifdef _WIN32
+    t->stop_event    = NULL;
+    t->thread_handle = NULL;
+    t->timer_handle  = NULL;
+#else
+    pthread_mutex_init(&t->mtx, NULL);
+    pthread_cond_init(&t->cv, NULL);
+    t->stop_flag = 0;
+#endif
+
+    uint32_t timer_id = (uint32_t)(slot + 1);
+    if (id_out_addr != 0) {
+        write_be32(id_out_addr, timer_id);
+    }
+
+    return CELL_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * sys_timer_destroy
+ *
+ * r3 = timer_id
+ * -----------------------------------------------------------------------*/
+int64_t sys_timer_destroy(ppu_context* ctx)
+{
+    uint32_t timer_id = LV2_ARG_U32(ctx, 0);
+
+    if (timer_id == 0 || timer_id > SYS_TIMER_MAX)
+        return (int64_t)(int32_t)CELL_ESRCH;
+
+    sys_timer_info* t = &g_sys_timers[timer_id - 1];
+    if (!t->active)
+        return (int64_t)(int32_t)CELL_ESRCH;
+
+    /* Stop if running */
+    if (t->running) {
+        t->running = 0;
+#ifdef _WIN32
+        if (t->stop_event) SetEvent(t->stop_event);
+        if (t->thread_handle) {
+            WaitForSingleObject(t->thread_handle, 3000);
+            CloseHandle(t->thread_handle);
+        }
+        if (t->stop_event) CloseHandle(t->stop_event);
+#else
+        pthread_mutex_lock(&t->mtx);
+        t->stop_flag = 1;
+        pthread_cond_signal(&t->cv);
+        pthread_mutex_unlock(&t->mtx);
+        pthread_join(t->thread, NULL);
+        pthread_mutex_destroy(&t->mtx);
+        pthread_cond_destroy(&t->cv);
+#endif
+    }
+
+    t->active = 0;
+    return CELL_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * sys_timer_connect_event_queue
+ *
+ * r3 = timer_id
+ * r4 = queue_id
+ * r5 = source
+ * r6 = data1
+ * -----------------------------------------------------------------------*/
+int64_t sys_timer_connect_event_queue(ppu_context* ctx)
+{
+    uint32_t timer_id = LV2_ARG_U32(ctx, 0);
+    uint32_t queue_id = LV2_ARG_U32(ctx, 1);
+    uint64_t source   = LV2_ARG_U64(ctx, 2);
+    uint64_t data1    = LV2_ARG_U64(ctx, 3);
+
+    if (timer_id == 0 || timer_id > SYS_TIMER_MAX)
+        return (int64_t)(int32_t)CELL_ESRCH;
+
+    sys_timer_info* t = &g_sys_timers[timer_id - 1];
+    if (!t->active)
+        return (int64_t)(int32_t)CELL_ESRCH;
+
+    if (queue_id == 0 || queue_id > SYS_EVENT_QUEUE_MAX)
+        return (int64_t)(int32_t)CELL_ESRCH;
+
+    t->event_queue_id = (int32_t)queue_id;
+    t->source         = source;
+    t->data1          = data1;
+
+    return CELL_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * sys_timer_disconnect_event_queue
+ *
+ * r3 = timer_id
+ * -----------------------------------------------------------------------*/
+int64_t sys_timer_disconnect_event_queue(ppu_context* ctx)
+{
+    uint32_t timer_id = LV2_ARG_U32(ctx, 0);
+
+    if (timer_id == 0 || timer_id > SYS_TIMER_MAX)
+        return (int64_t)(int32_t)CELL_ESRCH;
+
+    sys_timer_info* t = &g_sys_timers[timer_id - 1];
+    if (!t->active)
+        return (int64_t)(int32_t)CELL_ESRCH;
+
+    t->event_queue_id = 0;
+    return CELL_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * sys_timer_start
+ *
+ * r3 = timer_id
+ * r4 = base_time (absolute start time, 0 = now)
+ * r5 = period_usec
+ * -----------------------------------------------------------------------*/
+int64_t sys_timer_start(ppu_context* ctx)
+{
+    uint32_t timer_id    = LV2_ARG_U32(ctx, 0);
+    /* uint64_t base_time = LV2_ARG_U64(ctx, 1); -- ignored for now */
+    uint64_t period      = LV2_ARG_U64(ctx, 2);
+
+    if (timer_id == 0 || timer_id > SYS_TIMER_MAX)
+        return (int64_t)(int32_t)CELL_ESRCH;
+
+    sys_timer_info* t = &g_sys_timers[timer_id - 1];
+    if (!t->active)
+        return (int64_t)(int32_t)CELL_ESRCH;
+
+    if (t->running)
+        return (int64_t)(int32_t)CELL_EBUSY;
+
+    if (period == 0)
+        return (int64_t)(int32_t)CELL_EINVAL;
+
+    t->period_usec = period;
+    t->running     = 1;
+
+#ifdef _WIN32
+    t->stop_event    = CreateEventA(NULL, TRUE, FALSE, NULL);
+    t->thread_handle = CreateThread(NULL, 0, timer_thread_proc, t, 0, NULL);
+#else
+    t->stop_flag = 0;
+    pthread_create(&t->thread, NULL, timer_thread_proc, t);
+#endif
+
+    return CELL_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * sys_timer_stop
+ *
+ * r3 = timer_id
+ * -----------------------------------------------------------------------*/
+int64_t sys_timer_stop(ppu_context* ctx)
+{
+    uint32_t timer_id = LV2_ARG_U32(ctx, 0);
+
+    if (timer_id == 0 || timer_id > SYS_TIMER_MAX)
+        return (int64_t)(int32_t)CELL_ESRCH;
+
+    sys_timer_info* t = &g_sys_timers[timer_id - 1];
+    if (!t->active)
+        return (int64_t)(int32_t)CELL_ESRCH;
+
+    if (!t->running)
+        return CELL_OK;
+
+    t->running = 0;
+
+#ifdef _WIN32
+    if (t->stop_event) SetEvent(t->stop_event);
+    if (t->thread_handle) {
+        WaitForSingleObject(t->thread_handle, 3000);
+        CloseHandle(t->thread_handle);
+        t->thread_handle = NULL;
+    }
+    if (t->stop_event) {
+        CloseHandle(t->stop_event);
+        t->stop_event = NULL;
+    }
+#else
+    pthread_mutex_lock(&t->mtx);
+    t->stop_flag = 1;
+    pthread_cond_signal(&t->cv);
+    pthread_mutex_unlock(&t->mtx);
+    pthread_join(t->thread, NULL);
+#endif
+
+    return CELL_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * Registration
+ *
+ * NOTE: There are syscall number collisions in the existing table:
+ *   SYS_TIMER_USLEEP (141) == SYS_EVENT_FLAG_WAIT (141)
+ *   SYS_TIMER_SLEEP  (142) == SYS_EVENT_FLAG_TRYWAIT (142)
+ *   SYS_TIME_GET_CURRENT_TIME (145) == SYS_EVENT_FLAG_CANCEL (145)
+ * The event flag handlers are registered separately and will win.
+ * Timer sleep/time functions should be called via wrapper functions
+ * or fixed syscall numbers should be assigned.
+ * For now, we register the timer-specific syscalls that don't collide.
+ * -----------------------------------------------------------------------*/
+void sys_timer_init(lv2_syscall_table* tbl)
+{
+    memset(g_sys_timers, 0, sizeof(g_sys_timers));
+
+    (void)plat_clock_freq();   /* read and kept, before any thread asks */
+
+    lv2_syscall_register(tbl, SYS_TIMER_CREATE,                   sys_timer_create);
+    lv2_syscall_register(tbl, SYS_TIMER_DESTROY,                  sys_timer_destroy);
+    lv2_syscall_register(tbl, SYS_TIMER_START,                    sys_timer_start);
+    lv2_syscall_register(tbl, SYS_TIMER_STOP,                     sys_timer_stop);
+    lv2_syscall_register(tbl, SYS_TIMER_CONNECT_EVENT_QUEUE,      sys_timer_connect_event_queue);
+    lv2_syscall_register(tbl, SYS_TIMER_DISCONNECT_EVENT_QUEUE,   sys_timer_disconnect_event_queue);
+
+    /* These have conflicting numbers with event flag syscalls.
+     * Register them here -- last registration wins. If events are
+     * registered after timers, the event handlers will override.
+     * The runtime should dispatch timer_usleep/sleep/get_current_time
+     * via direct function calls instead. */
+    lv2_syscall_register(tbl, SYS_TIME_GET_TIMEBASE_FREQUENCY, sys_time_get_timebase_frequency);
+
+    /* Register these but be aware of collisions */
+    lv2_syscall_register(tbl, SYS_TIMER_USLEEP,            sys_timer_usleep);
+    lv2_syscall_register(tbl, SYS_TIMER_SLEEP,             sys_timer_sleep);
+    lv2_syscall_register(tbl, SYS_TIME_GET_CURRENT_TIME,   sys_time_get_current_time);
+}

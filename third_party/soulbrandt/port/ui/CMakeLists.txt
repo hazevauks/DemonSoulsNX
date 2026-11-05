@@ -1,0 +1,177 @@
+# The wrapper UI: start screen, in-game menu bar and settings (docs/32).
+# FFCCEOT-Recomp's UI, itself adapted from Dusklight's (CC0), drawn with
+# RmlUi (MIT) and FreeType (FTL) over the game frame, through its own D3D12
+# renderer on the game's device (docs/76); on Windows, for one release, also
+# through RmlUi's D3D11 renderer on D3D11On12 (DES_UI_RENDER=d3d11).
+#
+# RmlUi, FreeType and stb are downloaded at configure time
+# into the build directory (FetchContent, not vendored). Everything here is its
+# own static library: des_boot only links it, so des_boot's compile flags (and
+# with them the lifted chunks' build) do not change.
+include(FetchContent)
+
+# ---- FreeType (FTL) ----
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+foreach(dep ZLIB BZIP2 PNG HARFBUZZ BROTLI)
+  set(FT_DISABLE_${dep} ON CACHE BOOL "" FORCE)
+endforeach()
+# By commit (a tag can be moved; a commit cannot), so not shallow: a shallow clone works with tag names only.
+FetchContent_Declare(freetype
+  GIT_REPOSITORY https://github.com/freetype/freetype.git
+  GIT_TAG 0a0221a1347e2f1e07c395263540026e9a0aa7c7   # VER-2-14-3
+  EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(freetype)
+if(NOT TARGET Freetype::Freetype)
+  add_library(Freetype::Freetype ALIAS freetype)   # what RmlUi looks for
+endif()
+
+# ---- RmlUi (MIT) ----
+set(RMLUI_SAMPLES OFF CACHE BOOL "" FORCE)
+set(RMLUI_FONT_ENGINE "freetype" CACHE STRING "" FORCE)
+set(RMLUI_PRECOMPILED_HEADERS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(RmlUi
+  GIT_REPOSITORY https://github.com/mikke89/RmlUi.git
+  GIT_TAG ba95ffe8bfb6370efb2cdcca927eaad4710c5413   # 6.3
+  EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(RmlUi)
+
+if(WIN32)
+  # RmlUi's Win32 platform helpers (the system interface) and its D3D11 renderer (the fallback) are sources in its tree.
+  set(RMLUI_BACKENDS ${rmlui_SOURCE_DIR}/Backends)
+  add_library(des_rmlui_backend STATIC
+    ${RMLUI_BACKENDS}/RmlUi_Renderer_DX11.cpp
+    ${RMLUI_BACKENDS}/RmlUi_Platform_Win32.cpp)
+  target_include_directories(des_rmlui_backend PUBLIC ${RMLUI_BACKENDS})
+  target_link_libraries(des_rmlui_backend PUBLIC RmlUi::RmlUi PRIVATE d3d11 d3dcompiler dxgi imm32)
+endif()
+
+# ---- stb (public domain / MIT): the images and the reports' PNGs ----
+# Headers only (stb_impl.cpp has the code); a commit, as stb has no releases.
+FetchContent_Declare(stb
+  GIT_REPOSITORY https://github.com/nothings/stb.git
+  GIT_TAG a7d4c2175630e1ea5b6f8dd00ab96fed0b97b96d)
+FetchContent_MakeAvailable(stb)
+
+# Third-party code: no warnings, optimised (the port configures with an empty
+# build type, which has no optimisation flags of its own).
+foreach(t freetype rmlui_core rmlui_debugger des_rmlui_backend)
+  if(TARGET ${t} AND MSVC)
+    target_compile_options(${t} PRIVATE /w /O2)
+  elseif(TARGET ${t})
+    target_compile_options(${t} PRIVATE -w -O2)
+  endif()
+endforeach()
+
+# ---- Embedded styles and fonts (cmake/EmbedFiles.cmake) ----
+set(DES_UI_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+file(GLOB DES_UI_STYLES CONFIGURE_DEPENDS ${DES_UI_DIR}/res/rml/*.rcss)
+set(DES_UI_FILES
+  ${DES_UI_STYLES}
+  ${DES_UI_DIR}/res/fonts/Cinzel.ttf
+  ${DES_UI_DIR}/res/fonts/AlegreyaSans-Regular.ttf
+  ${DES_UI_DIR}/res/fonts/AlegreyaSans-Bold.ttf
+  ${DES_UI_DIR}/res/fonts/MaterialSymbolsRounded-Regular.ttf
+  ${DES_UI_DIR}/../../PRIVACY.md)  # (the privacy note: privacy.cpp; its path in the table is ../../PRIVACY.md)
+set(DES_UI_ASSETS ${CMAKE_CURRENT_BINARY_DIR}/ui_assets.cpp)
+add_custom_command(
+  OUTPUT ${DES_UI_ASSETS}
+  COMMAND ${CMAKE_COMMAND} -D BASE_DIR=${DES_UI_DIR} -D OUTPUT=${DES_UI_ASSETS} "-DFILES=${DES_UI_FILES}"
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/../cmake/EmbedFiles.cmake
+  DEPENDS ${DES_UI_FILES} ${CMAKE_CURRENT_SOURCE_DIR}/../cmake/EmbedFiles.cmake
+  COMMENT "Embedding the UI's styles and fonts"
+  VERBATIM)
+
+# ---- The UI ----
+# Each platform's mouse and crash reports (docs/76): Win32 on Windows (with the crash dialog and the D3D11 renderer),
+# SDL elsewhere. The setup screens' files (child_process, setup_engine, setup_python, setup_http, setup_unzip, sha256,
+# setup_protocol, setup_page, setup_window, setup_screens, setup_options, setup_options_window, setup_pc, setup_rpcs3,
+# folder_picker; docs/88, docs/89, docs/90, docs/91) build on both: child_process.cpp, setup_engine.cpp,
+# setup_python.cpp, setup_http.cpp, setup_pc.cpp, setup_rpcs3.cpp and folder_picker.cpp hold their few functions for
+# each platform inside.
+file(GLOB DES_UI_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
+if(WIN32)
+  set(DES_UI_OTHER mouse_sdl crash_report_posix)
+else()
+  set(DES_UI_OTHER render_d3d11 mouse crash_report crash_dialog)
+endif()
+foreach(f ${DES_UI_OTHER})
+  list(REMOVE_ITEM DES_UI_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/${f}.cpp)
+endforeach()
+add_library(des_ui STATIC ${DES_UI_SOURCES} ${DES_UI_ASSETS})
+target_include_directories(des_ui PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${stb_SOURCE_DIR})
+target_compile_definitions(des_ui PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+# Developer builds (docs/55; the option is in port/CMakeLists.txt): the settings window's Developer tab. Off when the
+# UI is configured on its own without the option.
+if(DES_DEV)
+  target_compile_definitions(des_ui PRIVATE DES_DEV=1)
+else()
+  target_compile_definitions(des_ui PRIVATE DES_DEV=0)
+endif()
+if(MSVC)
+  target_compile_options(des_ui PRIVATE /O2 /EHsc ${DES_DEBUG_FLAGS} /W3 /wd4100)   # DES_DEBUG_FLAGS: port/CMakeLists.txt
+else()
+  target_compile_options(des_ui PRIVATE -O2)
+endif()
+# PRIVATE: nothing of RmlUi's (include paths, definitions) reaches des_boot's
+# compile lines, only its link line.
+if(WIN32)
+  target_link_libraries(des_ui PRIVATE des_rmlui_backend RmlUi::RmlUi d3d11 d3d12 d3dcompiler dxgi dxguid xinput shell32
+    ole32 user32 dbghelp uuid wevtapi winhttp)   # (dbghelp: the crash reports' minidump and stack; wevtapi: driver
+                                                 # resets; winhttp: the first Python with no curl, setup_http.cpp)
+else()
+  # SDL2 and vkd3d as port/CMakeLists.txt found them (the window, the pads, D3D12 and D3DCompile).
+  if(NOT TARGET PkgConfig::DES_VKD3D_LIBS)
+    message(FATAL_ERROR "The wrapper UI off Windows draws through vkd3d: configure with DES_VKD3D=ON (or DES_UI=OFF)")
+  endif()
+  if(TARGET SDL2::SDL2)
+    target_link_libraries(des_ui PRIVATE SDL2::SDL2)
+  else()
+    target_include_directories(des_ui PRIVATE ${SDL2_INCLUDE_DIRS})
+    target_link_libraries(des_ui PRIVATE ${SDL2_LIBRARIES})
+  endif()
+  # (CMAKE_DL_LIBS: dlopen, for the folder dialog's libdbus, loaded only when the dialog opens; folder_picker.cpp)
+  target_link_libraries(des_ui PRIVATE RmlUi::RmlUi PkgConfig::DES_VKD3D_LIBS ${CMAKE_DL_LIBS})
+endif()
+
+# The version shown on the start screen, in About, in reports and in the log: des_version.h, written on every build
+# by cmake/DesVersion.cmake (port/CMakeLists.txt includes it; a build of the UI alone includes it here).
+if(NOT TARGET des_version)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/DesVersion.cmake)
+endif()
+target_include_directories(des_ui PRIVATE ${DES_VERSION_DIR})
+add_dependencies(des_ui des_version)
+
+# settings.cpp on its own, its report and privacy calls stubbed (tests/settings_check.cpp): settings.ini files and
+# environments in, the environment the runtime reads out, the Renderer row's included (docs/120). With the same
+# definitions as des_ui's settings.cpp (DES_RSX_VULKAN among them: port/CMakeLists.txt). Built on demand:
+#   cmake --build <build> --target settings_check, then settings_check --row (or --no-row, without the row)
+add_executable(settings_check EXCLUDE_FROM_ALL tests/settings_check.cpp src/settings.cpp)
+target_include_directories(settings_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${DES_VERSION_DIR})
+target_compile_definitions(settings_check PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+if(DES_DEV)
+  target_compile_definitions(settings_check PRIVATE DES_DEV=1)
+else()
+  target_compile_definitions(settings_check PRIVATE DES_DEV=0)
+endif()
+if(MSVC)
+  target_compile_options(settings_check PRIVATE /EHsc /W3 /wd4100)
+endif()
+add_dependencies(settings_check des_version)
+
+# The first Python's fetch on its own (tests/setup_fetch_check.cpp), the data folder and the free space stubbed: curl
+# and tar against the host's own download and unzip (what Wine and CrossOver get), a stopped download carried on, and
+# the zip reader's refusals. It downloads python.org's embeddable zip three times. Windows only. Built on demand:
+#   cmake --build <build> --target setup_fetch_check, then setup_fetch_check <a new folder>
+if(WIN32)
+  add_executable(setup_fetch_check EXCLUDE_FROM_ALL tests/setup_fetch_check.cpp src/setup_python.cpp
+    src/setup_http.cpp src/setup_unzip.cpp src/child_process.cpp src/sha256.cpp src/stb_impl.cpp)
+  target_include_directories(setup_fetch_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${stb_SOURCE_DIR})
+  target_compile_definitions(setup_fetch_check PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
+  if(MSVC)
+    target_compile_options(setup_fetch_check PRIVATE /EHsc /W3 /wd4100)
+  endif()
+  target_link_libraries(setup_fetch_check PRIVATE winhttp)
+endif()

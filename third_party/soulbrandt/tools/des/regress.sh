@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# regress.sh [set-name]: regression screenshots of the first level.
+#
+# Boots with DES_SKIP_INTRO=1 DES_AUTO_CONTINUE=1 into the pinned save, lets the
+# opening cutscene play out, then walks a fixed route from the spawn point with
+# the live PAD_STICK knob (debug console setenv) and saves one screenshot per stop:
+#   s1_spawn   at the spawn point, after the level settles
+#   s2_walk    after walking forward
+#   s3_turn    after turning the camera right
+#   s4_on      after walking on
+# then compares the set with the last accepted one (shotdiff.py) and prints
+# the per-shot summary. Exit status: 0 all ok, 1 a shot regressed or is
+# missing, 2 the run never reached the level, 3 the save could not be copied
+# for the run, or (a build that swaps the save, below) the save folder could
+# not be used: another run or a play session holds it (waited
+# DES_SAVE_LOCK_WAIT s), or the player's save could not be copied aside, so
+# nothing was swapped; 4 a run that has gone left the save folder swapped
+# out, and this one did not undo it: the [save] lines say what was found and
+# what to do (DES_SAVE_TAKEOVER, des_save_lock in deslib.sh).
+#
+#   regress.sh                 new set named by date+time, diffed against "good"
+#   regress.sh accept <name>   make <name> the new "good" set
+# Like a run, pin-save and accept wait for a run that holds the save folder.
+#
+# Sets live in REGRESS_DIR (default $DES_SCRATCH/regress). Screenshots are
+# game-derived: point REGRESS_DIR outside the repository and never commit them.
+# The run plays from a pinned save ($REG/save, `regress.sh pin-save [dir]`),
+# so neither the player's progress nor an autosave moves the spawn point. The
+# game gets its own copy of it ($RUN/saves, as PS3_SAVEDATA_ROOT; des_run_save
+# in deslib.sh) and never sees the player's save folder. A build from before
+# PS3_SAVEDATA_ROOT (ps3recomp #80) swaps it in instead: the player's save is
+# copied aside before the run and put back after it.
+#
+# The route runs on the game's clock, not the wall clock (regress_route.py).
+# The run writes a frame log (DES_FRAMELOG, $RUN/frames.txt), and game time is
+# the sum of the frame steps in it: 1/30 s a frame at the original 30 fps, the
+# measured frame time under DES_FPS. So each stop is the same game moment at
+# 30, 120 or 240 fps and on a slow run, where the holds and waits just take
+# longer on the wall clock. A stick hold is a PAD_STICK window the runtime ends
+# by itself, its length set from the game/real rate and corrected while it
+# runs; a shot is the next frame after the console's CELLMARK_DUMP_NOW=1.
+# Timings, in game seconds (30 frames each at the original rate):
+# REGRESS_SETTLE (after the opening cutscene ends, default 35.9; with no
+# cutscene, after the player appears), REGRESS_WALK / REGRESS_TURN /
+# REGRESS_ON (stick holds, defaults 8 / 1.5 / 5). With the defaults s1_spawn
+# and the first walk fall where the clock-driven version of this script put
+# them at 30 fps; each later stop comes 0.3-0.6 s sooner after its hold, so
+# s4_on is about 1.4 s sooner (see regress_route.py). Sets it accepted still
+# compare. $RUN/route.txt has the timeline: the anchor, each hold's game-time
+# start and length, each shot's game time.
+# REGRESS_AB="KNOB=value": an A/B at one spot. After s4_on, set the knob live
+# and save s5_ab, then clear it and save s6_back. The walk does not end in
+# the same place every run, so this, not two runs, is how to see what one
+# knob changes. These two shots are not diffed against the good set.
+# REGRESS_ROUTE=game walks the same route inside the game (port/des_route.cpp,
+# DES_ROUTE=regress) instead of from Python through the debug console: its
+# holds are frame-exact, the game ends itself after the last shot, and the set
+# also gets the route's timeline and frame-time summary (route.txt,
+# summary.json). The test kit plays that route; this compares it with the
+# Python one before it becomes the default.
+set -uo pipefail
+. "$(dirname "$0")/deslib.sh"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+cd "$DES_ROOT" || exit 1
+REG="${REGRESS_DIR:-$DES_SCRATCH/regress}"; mkdir -p "$REG"
+
+SAVE="gamedata/dev_hdd0/home/00000001/savedata"
+# take_save: hold the save folder (des_save_lock) until this script exits.
+take_save() {
+  des_save_lock "$SAVE"; case $? in
+    0) ;;
+    1) echo "[regress] $SAVE is not free; not starting"; exit 3 ;;
+    *) echo "[regress] not starting: see the [save] lines above"; exit 4 ;;
+  esac
+  trap 'des_save_unlock "$SAVE"' EXIT
+}
+# The route starts wherever the save puts the character, so the run plays
+# from a pinned copy ($REG/save) and the player's own save is put back after.
+# `regress.sh pin-save [dir]` pins the current save (or dir); re-accept a set
+# after pinning a different one.
+if [ "${1:-}" = pin-save ]; then
+  src="${2:-$SAVE}"; [ -d "$src" ] || { echo "no save at $src"; exit 1; }
+  take_save
+  rm -rf "$REG/save"; cp -r "$src" "$REG/save"; echo "pinned $src"; exit 0
+fi
+
+if [ "${1:-}" = accept ]; then
+  [ -d "$REG/${2:?set name}" ] || { echo "no set $REG/$2"; exit 1; }
+  take_save
+  rm -rf "$REG/good"; cp -r "$REG/$2" "$REG/good"; echo "good = $2"; exit 0
+fi
+
+NAME="${1:-$(date +%Y%m%d_%H%M%S)}"; SET="$REG/$NAME"
+RUN="$DES_SCRATCH/regress_run"
+FROM="$REG/save"
+[ -d "$FROM" ] || { echo "[regress] no pinned save ($FROM): using the current one; see pin-save"; FROM="$SAVE"; }
+ROOT=()
+if des_save_root_ok; then
+  # The run's own copy of the save (des_run_save): nothing of the player's to
+  # put back.
+  rm -rf "$RUN" "$SET"; mkdir -p "$RUN/shots" "$SET"
+  r=$(des_run_save "$FROM" "$RUN/saves") || { echo "[regress] could not copy $FROM for the run"; exit 3; }
+  ROOT=("PS3_SAVEDATA_ROOT=$r")
+  restore() { trap '' TERM INT HUP; des_kill_own; trap - TERM INT HUP; }
+else
+  take_save
+  rm -rf "$RUN" "$SET"; mkdir -p "$RUN/shots" "$SET"
+  if [ -d "$SAVE" ]; then
+    des_backup_save "$SAVE" "$RUN/save" || { echo "[regress] could not back up $SAVE; save not swapped"; exit 3; }
+    des_save_note "$SAVE" "$RUN/save" || { echo "[regress] could not note the backup in $SAVE.lock; save not swapped"; exit 3; }
+  fi
+  restore() {   # as in levelcap.sh
+    trap '' TERM INT HUP
+    if ! des_kill_own; then
+      echo "[regress] a game of this run is still running, so $SAVE stays swapped out and $SAVE.lock stays: the next run puts the save back once that game has gone"
+    elif [ ! -d "$RUN/save" ] || des_restore_save "$RUN/save" "$SAVE"; then des_save_unlock "$SAVE"; fi
+    trap - TERM INT HUP
+  }
+  trap restore EXIT
+  if [ "$FROM" != "$SAVE" ]; then
+    des_save_swap "$FROM" "$SAVE" || { echo "[regress] could not put $FROM in place"; exit 2; }
+  fi
+fi
+trap restore EXIT
+OUT="$RUN/run.txt"; PAD="$RUN/pad"; CON="$RUN/con"; : > "$PAD"; : > "$OUT"
+
+# No periodic frame dump: each shot asks for the next frame (CELLMARK_DUMP_NOW),
+# and MINDRAWS keeps an empty present from being the one saved.
+ROUTE=()
+if [ "${REGRESS_ROUTE:-python}" = game ]; then
+  ROUTE=(DES_ROUTE=regress DES_ROUTE_OUT="$(cygpath -m "$SET")" DES_ROUTE_QUIT=1
+         DES_ROUTE_SETTLE="${REGRESS_SETTLE:-35.9}" DES_ROUTE_WALK="${REGRESS_WALK:-8}"
+         DES_ROUTE_TURN="${REGRESS_TURN:-1.5}" DES_ROUTE_ON="${REGRESS_ON:-5}" DES_ROUTE_AB="${REGRESS_AB:-}")
+fi
+tools/des/desrun.sh "${REGRESS_MAX:-600}" "$OUT" DES_SKIP_INTRO=1 DES_AUTO_CONTINUE=1 "${ROOT[@]}" "${ROUTE[@]}" \
+  PAD_FILE="$(cygpath -m "$PAD")" PS3_DEBUG="$(cygpath -m "$CON")" PS3_OSK_TEXT=Aldia HLE_FIRST=1 \
+  DES_FRAMELOG="$(cygpath -m "$RUN/frames.txt")" \
+  CELLMARK_DUMP_MINDRAWS=1 CELLMARK_DUMP_DIR="$(cygpath -m "$RUN/shots")" > "$RUN/summary.txt" 2>&1 &
+DR=$!; t0=$SECONDS
+say() { echo "[regress] t=$((SECONDS - t0))s $*"; }
+
+# DES_AUTO_CONTINUE presses through the menus in-process until the level's
+# script archive opens. desrun.sh lives as long as the game: a split build
+# writes its pid only once the game DLL is loaded, which can take longer than
+# any fixed grace.
+# A build configured without port/gen/libsre_glue.c or work/libsre (ignored
+# files a fresh worktree lacks) links, then hangs at the title on HLE SPURS:
+# say so once the modules have loaded, not after the 400 s wait.
+until grep -aq luabnd "$OUT"; do
+  kill -0 "$DR" 2>/dev/null || des_running || { say "run ended before the level"; exit 2; }
+  if [ "${LIBSRE_LLE:-1}" != 0 ] && grep -aq "after prx; before ppu_hle_init" "$OUT" &&
+     ! grep -aq "LLE load: ok=1" "$OUT"; then
+    say "no libsre LLE in this build (configure said \"libsre LLE not built\": port/gen or work/libsre missing)"; exit 2
+  fi
+  [ $((SECONDS - t0)) -lt 400 ] || { say "no level load"; exit 2; }
+  sleep 0.5
+done
+say "level loading"
+
+if [ ${#ROUTE[@]} -gt 0 ]; then
+  # The game walks the route and then ends itself; desrun.sh ends with it, or
+  # stops it at REGRESS_MAX.
+  wait "$DR" 2>/dev/null
+  cp "$SET/route.txt" "$RUN/route.txt" 2>/dev/null
+  last=$(tail -1 "$SET/route.txt" 2>/dev/null | tr -d '\r')
+  case "$last" in
+    *"done: ok,"*) rc=0 ;;
+    *"done: missing,"*) rc=1 ;;
+    *) say "the route did not finish: ${last:-no route.txt} (see $OUT)"; exit 2 ;;
+  esac
+  say "route ${last#* done: }"
+else
+  python "$(cygpath -m "$HERE/regress_route.py")" --frames "$(cygpath -m "$RUN/frames.txt")" \
+    --console "$(cygpath -m "$CON")" --shots "$(cygpath -m "$RUN/shots")" --set "$(cygpath -m "$SET")" \
+    --log "$(cygpath -m "$RUN/route.txt")" --settle "${REGRESS_SETTLE:-35.9}" --walk "${REGRESS_WALK:-8}" \
+    --turn "${REGRESS_TURN:-1.5}" --on "${REGRESS_ON:-5}" --ab "${REGRESS_AB:-}" --t-offset $((SECONDS - t0))
+  rc=$?
+  [ $rc = 2 ] && exit 2
+  des_console "$CON" "stat" | sed 's/^/  /'
+fi
+restore; trap - EXIT
+say "set $SET"
+
+if [ -d "$REG/good" ]; then
+  python "$DES_ROOT/tools/des/shotdiff.py" "$REG/good" "$SET" --out "$SET/diff"
+else
+  echo "no good set yet: look at $SET, then: regress.sh accept $NAME"
+fi

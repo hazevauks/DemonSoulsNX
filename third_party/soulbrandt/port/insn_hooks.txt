@@ -1,0 +1,237 @@
+# Instruction hooks for the PPU lift: ppu_lifter.py --insn-hooks @port/insn_hooks.txt
+# Each line: guest address = host function. The lifted code calls the function
+# with (ctx, address) right after that instruction. See docs/28, "Camera
+# catch-up at any frame rate".
+#
+# des_motion_blur (port/des_options.cpp): DES_MOTION_BLUR=0 inverts the blur
+# stage's test of its enable byte, like RPCS3's "Disable Motion Blur" patch
+# (bne -> beq at 0x00217E7C).
+0x00217E70=des_motion_blur   # cmpwi cr7, r0 (= byte +0x1D4), 0
+
+# Dev hooks (docs/55). Every line calls des_dev_hook, which is empty in release builds.
+0x00280E64=des_dev_hook   # dev hook: hit HP damage (ApplyDamage 0x00280DC8)
+0x00280F88=des_dev_hook   # dev hook: hit stamina damage (ApplyDamage)
+0x0028B224=des_dev_hook   # dev hook: hit damage after the calculation (handler 0x0028B1D8)
+0x002818D0=des_dev_hook   # dev hook: fraction damage (0x002816D0)
+0x00280724=des_dev_hook   # dev hook: SpEffect HP change (0x002806D8)
+0x00280C78=des_dev_hook   # dev hook: SpEffect MP change (0x00280A08)
+0x0026FB20=des_dev_hook   # dev hook: AddHP
+0x0026FC48=des_dev_hook   # dev hook: SetMP
+0x0026FC98=des_dev_hook   # dev hook: SetStamina
+0x00286614=des_dev_hook   # dev hook: dash cost (0x00286020)
+0x002EDEB0=des_dev_hook   # dev hook: root-motion factor (0x002EDDA0)
+0x0027882C=des_dev_hook   # dev hook: weapon action stamina cost (0x002784C0)
+
+# des_cut_cam (port/des_options.cpp): the cutscene camera's keys (sibcam).
+# 0x005F71D0 loads the nearest of two keys 1/30 s apart (s < 0.5 ? earlier :
+# later); with DES_CUTFPS=1 the hooks blend the two by s. The first decides
+# once a call; the other three replace the loaded vector.
+0x005F7254=des_cut_cam   # lwz r9, -0x7F6C(r30): s (f10), the gap (f11) and the key indices are set; decides once a call
+0x005F72EC=des_cut_cam   # lvx v4: position (earlier r1+0xA0, later r1+0xB0)
+0x005F7394=des_cut_cam   # lvx v12: rotation in radians, before the wrap (earlier r1+0xD0, later r1+0xA0)
+0x005F743C=des_cut_cam   # lvx v2: scale (earlier r1+0x70, later r1+0xA0)
+
+# des_mouse_look (port/des_options.cpp): mouse look (docs/41) in the ChrExFollowCam
+# update. The update works yaw and pitch out again from the eye and the target
+# every frame, so the mouse's turn goes in where the stick's does, on a frame
+# that counts as one where the stick moved.
+0x00119670=des_mouse_look   # li r0, 4080: the entry (r3 = the camera); takes the counts once a game frame
+0x0011C910=des_mouse_look   # lfs f0, 0xF0(r1): the stick's pitch input, tested against 0 next; nonzero with a turn to make
+0x0011C758=des_mouse_look   # lwz r9, -0x7F84(r30): the angles rebuilt, the stick's turn next; adds the mouse's turn
+# The bow's aim view (ChrAimCam, the camera manager's modes 1 and 2) keeps its
+# angles from frame to frame, so the mouse's turn goes onto them at its entry.
+0x00110608=des_mouse_look   # li r0, 1776: the aim camera's entry (r3 = the camera, r5 = the character); takes the counts and turns its kept angles
+
+# des_cam_rate (port/des_options.cpp): loads of a per-frame ease factor k in the
+# camera code (cur += (target - cur) * k, tuned for 30 fps). Each is an lfs; the
+# hook rescales k to the frame time.
+
+# ChrExFollowCam update (0x00119670), the usual third-person camera.
+# All of these run every frame while walking.
+0x00119818=des_cam_rate   # k = +0x294 (0.1)
+0x001198D8=des_cam_rate   # k = 0.1 (constant), +0x174 towards +0x178
+0x00119FAC=des_cam_rate   # k = +0x144
+0x0011A018=des_cam_rate   # k = +0x144
+0x0011B830=des_cam_rate   # k = +0x1A8 (0.4)
+0x0011C0E8=des_cam_rate   # k = 1/30 (constant), +0x17C back towards +0x180
+0x0011C2BC=des_cam_rate   # k = +0x17C (0.1): the follow point's chase (vector lerp)
+0x0011D6E4=des_cam_rate   # k = +0x220 (0.06), +0x130
+0x0011D820=des_cam_rate   # k = +0x220 (0.06), +0x130
+
+# The same update's R3 reset (nothing in lock-on range) and lock-on look-at:
+# k = +0x224 (0.3) of the turn toward the target a frame. These run only while
+# a reset or a lock-on is active.
+0x0011A100=des_cam_rate   # R3 reset, pitch; the f10 copy at 0x0011A108 feeds yaw
+0x0011CF84=des_cam_rate   # lock-on look-at, pitch
+0x0011CF98=des_cam_rate   # lock-on look-at, yaw
+0x0011D2D4=des_cam_rate   # lock-on look-at, both axes from one length
+
+# des_cam_keep (port/des_options.cpp): a factor the camera keeps a frame,
+# pitch = base + (pitch - base) * r, tuned for 30 fps.
+0x0011C15C=des_cam_keep   # r = +0x18C (0.3): pitch return after a scripted angle
+
+# des_cam_step (port/des_options.cpp): a step a camera adds once a frame,
+# tuned for 30 fps. The hook scales it by the frame's 30 Hz steps.
+# The bow's aim view (ChrAimCam update 0x00110608): its zoom position +0x138
+# moves by the zoom input (-1, 0 or 1) times this step a frame, clamped to
+# [0, 1]. (Its field of view is lerp(+0x130, +0x134, +0x138), worked out
+# again each frame: no ease, so no des_cam_rate site.)
+0x001107C0=des_cam_step   # lfs f13, 0x13C(r31): the zoom step (0.1)
+
+# des_dof (port/des_options.cpp): DES_DOF=0 zeroes the two depth-of-field
+# strengths that the image-process update blends from the area's DOF_BANK rows.
+0x002184DC=des_dof   # lbz r0, 0x1C4(r31), the first instruction after the blend (bl 0x005EAF18)
+
+# DES_ASPECT wider than 16:9 (port/des_aspect.cpp): the HUD and menus kept 16:9
+# in the middle (unless DES_HUD=stretch). All are no-ops at 16:9.
+0x00718D84=des_hud_canvas     # stfs f13,0(r11): the menu canvas's right word (1280); widened to [-L, 1280+L]
+0x0079EF7C=des_hud_w2s        # stvx v31,0,r29: WorldToScreen's result; x spread onto the wider canvas
+0x007B5AE8=des_hud_onscreen   # lfs f13,0(r3): TargettingSite's on-screen test, x
+0x007B61D4=des_hud_onscreen   # lfs f13,0(r3): TargettingSite's update, the same test
+0x008AEB68=des_hud_onscreen   # lfs f13,0(r31): FloatingPCGauge's on-screen test, x
+0x007A6264=des_hud_onscreen   # lfs f13,0(r26): 0x007A61D8's on-screen test (the +0xBA0 slot), x
+# DES_ASPECT and DES_HUD changed while playing (port/des_aspect.cpp, "Live"):
+# the cameras built so far, and the render context that holds the HUD's matrix.
+0x0012F074=des_cam_ctor       # stfs f12,0x54(r29): a camera constructor's default aspect; lists the camera
+0x0012F0DC=des_cam_ctor       # stfs f12,0x54(r29): the other camera constructor, the same
+0x000D5B24=des_cam_own        # stfs f0,0x54(r19): 0x000D5980 gives its camera its target's shape; off the list
+0x00CD4854=des_hud_ctx        # rldicl r5,r9,0,32: the 0x3A handler, r5 = the command's first word, r3 = the context
+
+# ChrFollowCam update (0x00122C40).
+0x00123100=des_cam_rate   # k = +0x114
+0x00123164=des_cam_rate   # k = +0x114
+0x00124188=des_cam_rate   # k = +0x158
+0x0012554C=des_cam_rate   # k = +0x19C
+0x001256D4=des_cam_rate   # k = +0x19C
+
+# des_slide_rate (port/des_options.cpp): a character proxy's slide on slopes
+# too steep to stand on, in its velocity update 0x001FE778. The gain is added
+# and the decay applied once a frame, tuned for 30 fps.
+0x001FEAF4=des_slide_rate   # decay 0.65 (0x019D9C40), slide *= decay
+0x001FED50=des_slide_rate   # gain 1.0 (0x019D9C3C), slide += gravity along the slope * gain
+
+# des_phys_rate (port/des_options.cpp): DES_PHYS_HZ caps Havok steps a second
+# (default 30); des_phys_kf gives the pose passes the same step.
+0x001D1E64=des_phys_rate  # lbz r28, 0x14(r31): the physics update's skip byte, dt in f31
+0x001EF6D0=des_phys_kf    # fdivs f31, f0, f1: 1/dt for driving bodies to the pose
+0x001DF83C=des_phys_kf    # fdivs f31, f0, f1: the same, second caller
+0x012D86C4=des_rag_pose_a  # ld r2 after a ragdoll pose reader's transform-to-pose call: bone pose between steps
+0x012D9354=des_rag_pose_b  # the same, second pose reader
+0x0109F2C4=des_body_xform  # last stvx of the hkTransform-to-matrix copy: a moving body's matrix between steps
+0x000112E8=des_body_sample # addi r2 in the stub to Havok's approxTransformAt: r3 = a body's motion, f1 = the time
+
+# des_viewer_rate (port/des_options.cpp): the character creation previews'
+# stick steps add the right stick to the yaw and pitch once a frame, tuned
+# for 30 fps. The hook scales the stick (f1, f2) by the frame's 30 Hz steps.
+0x008DA0E0=des_viewer_rate   # stdu r1, -0x290(r1), the first instruction: the face (Edit Appearance)
+0x008DB170=des_viewer_rate   # stdu r1, -0x290(r1), the first instruction: the body
+
+# des_noise_rate (port/des_options.cpp): sound events lose 1% of their radius a
+# frame (radius *= 0.99, 0x018EDC0C) in the list update 0x006A3970.
+0x006A3990=des_noise_rate   # lfs f12, the 0.99, loaded once before the loop
+0x006A2E8C=des_noise_rate   # the same in the single-entry twin 0x006A2E78 (no callers)
+
+# des_fade_rate (port/des_options.cpp): character effect nodes that fade the
+# model by a fixed step a frame (docs/42, 2.4). The hook scales the step by the
+# frame's 30 Hz steps.
+0x0025EB88=des_fade_rate   # lfs f0, 0.05 (0x018D6848): type 16 fading in
+0x0025EC14=des_fade_rate   # lfs f0, 0.05: type 16 fading out (distance mode)
+0x00265C88=des_fade_rate   # lfs f13, 1/30 (0x018D691C): type 14 fading in
+0x0026558C=des_fade_rate   # lfs f13, 1/30: type 14 fading out
+
+# des_net_sync (port/des_options.cpp): remote players (docs/69, "Remote
+# players"). The send counter's reload sets how often this player's position
+# goes out; the move-times-30 product picks a remote's walk or run.
+0x00313B24=des_net_sync   # li r0, 5: PadManipulator's type-1 send counter (+0x198) reload, one packet per 6 frames
+0x0030C330=des_net_sync   # fmuls f0, f12, f0: OnPacket's 1.2 * the gap since the last packet, the chase speed's divisor
+0x0030C378=des_net_sync   # addi r5, r1, -0xC0: NetworkManipulator SetMoveVector's entry, v2 = the frame's move
+0x0030C46C=des_net_sync   # fmuls f12, f0, f12: |move| * 30 in NetworkManipulator's SetMoveVector, tested against 0.01/2/6
+
+# des_qwc_local (port/des_options.cpp): DES_NET_TENDENCY=own, the server's world tendency
+# replaced with the player's own (docs/69, "World tendency").
+0x00567E9C=des_qwc_local  # mflr r0: the getQWCData reply's per-area reader (r4 = out, r5 = area), before r4 is tested
+
+# des_net_grade_poll (port/des_options.cpp): DES_NET_RATING_POLL, how often the game asks
+# whether the player's messages were rated (300 s; docs/69, "Message ratings").
+0x0054E934=des_net_grade_poll  # subf r0, r0, r29: seconds since the last getBloodMessageGrade, tested against 300
+
+# des_net_show (port/des_options.cpp): DES_NET_MESSAGES, DES_NET_BLOODSTAINS, DES_NET_GHOSTS = 0 hide
+# other players' messages, bloodstains and ghosts (docs/69, "Showing messages, bloodstains and ghosts").
+0x00562BC4=des_net_show  # mr r21, r3: getBloodMessage parser's entry count
+0x00560904=des_net_show  # mr r18, r3: getReplayList parser's entry count (bloodstains)
+0x003A5CA8=des_net_show  # li r29, 1: the wandering ghost tick starts the next ghost
+0x0054E8C0=des_net_show  # ld r0, 0xc8(r31): scheduler, the bloodstain list's last time
+0x0054E8F8=des_net_show  # ld r0, 0xd0(r31): scheduler, the message list's last time
+0x00558884=des_net_show  # lwz r0, 0x18c(r31): the ghost reply's first count (both counts held to their arrays)
+
+# des_net_replay (port/des_options.cpp): a ghost or bloodstain replay from the server whose frame count
+# does not fit its data is dropped, through the game's own paths (docs/69, "Replays").
+0x00391818=des_net_replay  # cmpwi cr7, r3, 0: a bloodstain's replay after its unpack (length at 0x74(r1))
+0x003A596C=des_net_replay  # cmplwi cr7, r0, 0xfff: a ghost's replay length after its first unpack
+0x003A5EA0=des_net_replay  # cmplwi cr7, r0, 0xfff: the same after its second unpack
+0x003957B8=des_net_replay  # cmpwi cr7, r4, 0: the replay reader's entry (r4 = the data)
+
+# des_fx_state (port/des_options.cpp): particle effect (FFX) nodes' state
+# machine in the scene update 0x013B74B8. An emitter repeats by re-entering its
+# own state, at most once an update: 30 times a second at 30 fps, 240 at 240.
+# The hook holds a re-entry until the state has lasted 1/30 s.
+0x013B75A8=des_fx_state   # mr r0, r3: the next state from the state's own transitions (0 = none)
+0x013B7940=des_fx_state   # mr r0, r3: the next state (1) on the paths of templates 0x7E7, 0x835 and 0x849
+0x013B7B9C=des_fx_state   # mr r0, r3: the next state (2) on template 0x7E4's path
+0x013B7CA4=des_fx_state   # mr r0, r3: the next state (2) on template 0x7E7's path
+0x013B7CCC=des_fx_state   # mr r0, r3: the next state (4) on the paths of templates 0x7E4 and 0x7E7
+0x013B75D4=des_fx_state   # stfs f0, 0x94(r31): the new state's time set to 0; takes the part of a frame past 1/30 s
+
+# des_ghost_rate (port/des_options.cpp): wandering ghosts' playback
+# (ReplayManipulator) steps a sample per 10 frames, so above 30 fps ghosts ran;
+# the hooks use 1/(3 dt) frames a sample (docs/69, "Wandering ghosts").
+0x00315030=des_ghost_rate  # li r9, 10: Update's frames to the next sample (+0x1E4)
+0x003147EC=des_ghost_rate  # lfs f12: 10.0, the next sample's move and turn split into per-frame steps
+0x00314ABC=des_ghost_rate  # lfs f12: 30.0, SetMoveVector's step-to-speed factor (walk or run)
+
+# des_twist_rate (port/des_options.cpp): moving locked on, the bone turner
+# (0x003D3BC0) eases the lower body's turn against the upper body by a fixed
+# share an update, so above 30 fps a change of direction snapped round; the
+# hook makes it ease as at 30 fps (docs/28, "Locked-on direction changes").
+0x003D42BC=des_twist_rate   # lfs f12, 0x20(r31): the bone's ease share (0.35, the locomotion controller's +0x154)
+
+# des_sun_gate (port/des_options.cpp): the sun flare's readers take the probe's
+# count only once label 0x52 has reached the probe's counter; above 30 fps that
+# never happens and the flare keeps a stale count, through walls or gone (issue
+# #290, docs/28, "Sun flare stuck above 30 fps").
+0x003E2DF0=des_sun_gate   # lwz r0, 0(r9): label 0x52, then cmplw r0, r28 (the query's counter, 0x003E2D38)
+0x003E6330=des_sun_gate   # lwz r0, 0(r3): label 0x52, then cmplw r0, r29 (0x003E5750)
+0x003E6518=des_sun_gate   # lwz r0, 0(r3): label 0x52, then cmplw r0, r29 (0x003E6368)
+
+# des_ik_rate (port/des_options.cpp): the foot IK (issue #140, docs/92). The
+# driver 0x002F5B08 and Havok's foot placement solver (0x00FF4DC0) smooth by
+# a fixed amount an update, so above 30 fps the hips and feet settle faster
+# and follow every bump; the hooks make each ease and keep last as at 30 fps.
+0x002F5B14=des_ik_rate   # fmr f30, f1: the driver's dt, kept for the solver's sites in the same call
+0x002F5DB8=des_ik_rate   # lfs f13: 0.2, the pelvis offset's share of the lower foot's error (ease)
+0x002F5CCC=des_ik_rate   # lfs f0, 0x220(r31): 0.6, the pelvis offset kept with neither foot hitting (keep)
+0x00FF5680=des_ik_rate   # lfs f11, 0x68(r12): onOffGain 0.8, the solver's weight eased up (ease)
+0x00FF58CC=des_ik_rate   # lfs f11, 0x68(r12): onOffGain 0.8, the solver's weight eased down (ease)
+0x00FF54D4=des_ik_rate   # fmuls f13: the foot height's step, its two gains' product (0.64; ease)
+
+# des_roll_dir (port/des_options.cpp): DES_ROLLDIR, a roll while locked on goes
+# where the stick points. The roll's start turns the player's facing, and the
+# locked facing update aims at the turned facing for the roll's first 0.3 s.
+0x002FF8F0=des_roll_dir   # extsw r4, r4: script function 110 before bl 0x002EB3E8; r3 = the controller, r4 = k
+0x00301C24=des_roll_dir   # li r4, 0: the same call's other path (k = 0)
+0x0030F734=des_roll_dir   # fadds f1, f1, f0: the locked facing update's yaw to the target; r26 = the controller
+
+# des_roll_tie (port/des_options.cpp): DES_ROLLTIE, a roll toward an exact
+# diagonal when not locked on goes forward (toward the stick), as the game's
+# tie rule means, instead of the side its turn's rounding picks.
+0x0030F2BC=des_roll_tie   # lfs f27, 0xB0(r1): the turn's last load; f30, f31 and f26, f27 = forward, side
+
+# des_game_error (port/des_options.cpp): the game's error report goes to the log.
+# On a PS3 it stops the game; here the game goes on with the part that failed
+# (docs/116: NPC talks that end at once when no sound stream starts).
+0x00A9DD58=des_game_error   # stdu r1, -0x80(r1): the report's first instruction; r3 file, r4 line, r5 message
+
+# des_viewport_room (port/des_options.cpp): the viewport command waits for room
+# in HighGraphics' command ring, as the ring's other writers do. The game sleeps
+# 30 us once when the ring is full and then writes anyway (docs/117).
+0x00D229A4=des_viewport_room   # nop after bl usleep(30) in 0x00D22670, then the write; r28 = the ring's control, r31 = put

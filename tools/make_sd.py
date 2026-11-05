@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Fills SD_CARD/ with a test build: copy its contents to the root of the SD card.
+
+    python tools/make_sd.py [--nro build/demonsouls.nro] [--game game_data/disc] [--no-game]
+
+The game's files are linked, not copied, when they are on the same drive, so the folder
+costs no extra space. The disc's EBOOT.BIN is left out: it is encrypted, and the console
+never runs it (the game's code is recompiled into the NRO).
+"""
+
+import argparse
+import os
+import pathlib
+import shutil
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+APP = pathlib.Path("switch") / "demonsouls"
+LEAVE_OUT = {"PS3_GAME/USRDIR/EBOOT.BIN", "extract_manifest.json"}
+
+
+def place(source, target):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        if target.stat().st_size == source.stat().st_size and target.stat().st_mtime >= source.stat().st_mtime:
+            return False
+        target.unlink()
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+    return True
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--nro", type=pathlib.Path, default=ROOT / "build" / "demonsouls.nro")
+    parser.add_argument("--game", type=pathlib.Path, default=ROOT / "game_data" / "disc",
+                        help="the folder tools/extract_game.py wrote")
+    parser.add_argument("--no-game", action="store_true", help="only put the NRO in place")
+    args = parser.parse_args()
+
+    app = ROOT / "SD_CARD" / APP
+    if not args.nro.is_file():
+        raise SystemExit("%s was not found: build it first" % args.nro)
+    (app / "SD_LOG").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(args.nro, app / "demonsouls.nro")
+    print("NRO: %s" % (APP / "demonsouls.nro").as_posix())
+
+    if args.no_game:
+        return 0
+    if not (args.game / "PS3_GAME" / "PARAM.SFO").is_file():
+        raise SystemExit("%s has no PS3_GAME/PARAM.SFO: run tools/extract_game.py first" % args.game)
+
+    placed = total = 0
+    for source in sorted(args.game.rglob("*")):
+        relative = source.relative_to(args.game).as_posix()
+        if not source.is_file() or relative in LEAVE_OUT:
+            continue
+        total += 1
+        placed += place(source, app / "game" / relative)
+    print("game: %d files in %s (%d new or changed)" % (total, (APP / "game").as_posix(), placed))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

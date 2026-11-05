@@ -1,0 +1,19 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Demon's Souls",
+  "wikidata": "Q1153708",
+  "system": "PS3",
+  "type": "recomp",
+  "original": { "region": "USA", "serial": "BLUS30443" },
+  "project": "Soulbrandt",
+  "status": "released",
+  "targets": ["Windows", "Linux"],
+  "toolchain": "ps3recomp",
+  "approach": "Static recompilation of the PPU and SPU code to C, linked against a reimplementation of the PS3 system libraries, rendering through Direct3D 12 on Windows and Vulkan on Linux.",
+  "links": [
+    { "label": "Releases", "url": "https://github.com/JonathanDC64/Soulbrandt/releases" },
+    { "label": "Discord", "url": "https://discord.gg/BzmwDeca8s" },
+    { "label": "ps3recomp fork", "url": "https://github.com/JonathanDC64/ps3recomp" }
+  ],
+  "notes": "0.1.0 (alpha) is out: setup builds the game on your PC from your own copy. Up to 240 fps or unlocked with the game's timing fixed, up to 4K, ultrawide and HDR, and online play on the project's own server."
+}

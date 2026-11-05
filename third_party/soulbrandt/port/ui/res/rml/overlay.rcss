@@ -1,0 +1,257 @@
+/* Adapted from Dusklight (CC0) by way of FFCCEOT-Recomp. Adapted for Demon's Souls: toasts and the menu hint only. */
+body {
+    overflow: visible;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    font-family: var(--font-family-body);
+    font-weight: normal;
+    font-size: var(--font-size-2xl);
+    color: var(--color-text);
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    align-items: stretch;
+    z-index: 2;
+    pointer-events: none;
+}
+
+toast {
+    position: absolute;
+    border-width: 1dp;
+    background-color: rgba(var(--color-surface-rgb), 80%);
+}
+
+toast {
+    border-color: var(--toast-border-color);
+    top: 40dp;
+    right: 40dp;
+    /* A definite width. With width auto, RmlUi takes the progress bar's 100% as the toast's max-content width and
+       stretches the toast across the screen. This one fits a trophy: the 64dp icon, the 16dp gap and toast-body's
+       440dp, plus the padding and the border (border-box sizing, global.rcss). */
+    width: 570dp;
+    max-width: 90%;
+    display: flex;
+    flex-flow: column;
+    border-radius: var(--radius-window);
+    overflow: hidden;
+    box-shadow: 0 0 15dp 3dp;
+    filter: opacity(0);
+    transform: scale(0.9);
+    transform-origin: center;
+    transition: filter transform 0.2s cubic-in-out;
+    padding: 18dp var(--space-xl);
+    gap: var(--space-sm);
+}
+
+toast[open] {
+    filter: opacity(1);
+    transform: scale(1);
+}
+
+toast heading {
+    display: flex;
+    gap: 18dp;
+    align-items: center;
+    font-family: var(--font-family-heading);
+    font-size: var(--font-size-xl);
+    font-weight: bold;
+    line-height: 1.2;
+    text-transform: uppercase;
+    color: var(--toast-heading-color);
+}
+
+toast heading > toast-title {
+    flex: 1 0 auto;
+}
+
+toast heading > row {
+    flex: 1 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+}
+
+toast message {
+    display: flex;
+    flex-flow: column;
+    gap: var(--space-sm);
+}
+
+toast message row {
+    display: flex;
+}
+
+toast message row.muted {
+    opacity: 0.5;
+}
+
+toast.warning {
+    --toast-border-color: var(--color-accent);
+    --toast-heading-color: var(--color-accent);
+}
+
+toast.menu-notification {
+    top: 40dp;
+    right: auto;
+    bottom: auto;
+    left: 50%;
+    width: auto;  /* sized to its text (it has no progress bar) */
+    max-width: 90%;
+    transform: translateX(-50%) scale(0.9);
+}
+
+toast.menu-notification[open] {
+    transform: translateX(-50%) scale(1);
+}
+
+toast.menu-notification message {
+    align-items: center;
+    text-align: center;
+}
+
+toast.menu-notification message row {
+    align-items: center;
+    gap: 6dp;
+}
+
+toast icon {
+    width: 1.2em;
+    height: 1.2em;
+    font-size: 1.2em;
+}
+
+/* A toast with an icon (a trophy): the icon left of the heading and the message. */
+toast toast-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-lg);
+}
+
+toast toast-body {
+    flex: 1 1 auto;  /* the rest of the row, so the grade sits at the right edge; a long name wraps */
+    display: flex;
+    flex-flow: column;
+    gap: var(--space-sm);
+    max-width: 440dp;
+}
+
+toast toast-icon {
+    flex: 0 0 auto;  /* keeps its 64dp when a long name fills the body */
+    display: flex;
+    align-items: center;
+}
+
+toast toast-icon img,
+toast toast-icon icon {
+    width: 64dp;
+    height: 64dp;
+}
+
+toast toast-icon icon {
+    font-size: 56dp;
+}
+
+toast.trophy heading grade icon {
+    margin-right: var(--space-xs);
+}
+
+toast.trophy message {
+    font-weight: bold;
+    color: var(--color-accent);
+}
+
+toast.trophy grade.platinum {
+    color: var(--color-grade-platinum);
+}
+
+toast.trophy grade.gold {
+    color: var(--color-grade-gold);
+}
+
+toast.trophy grade.silver {
+    color: var(--color-grade-silver);
+}
+
+toast.trophy grade.bronze {
+    color: var(--color-grade-bronze);
+}
+
+/* The online server's banners: a thin bar across the top that slides down, and back up when done. Its text holds
+   still if it fits, else the overlay scrolls it (ticker-text's transform). */
+ticker {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 34dp;
+    display: flex;
+    align-items: center;
+    gap: var(--space-lg);
+    padding: 0 var(--space-xl);
+    background-color: rgba(var(--color-surface-rgb), 70%);
+    border-bottom-width: 1dp;
+    border-bottom-color: rgba(var(--color-border-rgb), 35%);
+    transform: translateY(-100%);
+    transition: transform 0.35s cubic-out;
+}
+
+ticker[open] {
+    transform: translateY(0);
+}
+
+ticker ticker-label {
+    flex: 0 0 auto;
+    font-family: var(--font-family-heading);
+    font-size: var(--font-size-md);
+    font-weight: bold;
+    text-transform: uppercase;
+    color: var(--color-warning);
+}
+
+ticker ticker-track {
+    flex: 1 1 auto;
+    position: relative;
+    height: 100%;
+    overflow: hidden;
+    /* RmlUi clips only content that overflows the layout, and a transform moves the text without that: clip always. */
+    clip: always;
+}
+
+ticker ticker-text {
+    position: absolute;
+    top: 0;
+    left: 0;
+    white-space: nowrap;
+    line-height: 34dp;
+    font-size: var(--font-size-xl);
+    color: var(--color-text);
+}
+
+/* The glow round the part of the game's menu under the pointer (docs/114; overlay.cpp sets its place and size in
+   px). A thin pale outline with a soft glow, fading in quickly. */
+game-glow {
+    position: absolute;
+    border-width: 1.5dp;
+    border-color: rgba(240, 236, 222, 90%);
+    border-radius: 3dp;
+    box-shadow: rgba(240, 236, 222, 45%) 0 0 12dp 2dp, rgba(240, 236, 222, 18%) 0 0 6dp 0 inset;
+    opacity: 0;
+    transition: opacity 0.12s quadratic-out;
+}
+
+game-glow[open] {
+    opacity: 1;
+}
+
+@media (max-height: 640dp) {
+    toast {
+        top: 20dp;
+        right: 20dp;
+    }
+
+    toast.menu-notification {
+        top: 20dp;
+    }
+}
