@@ -27,8 +27,15 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           python3 tools/check_repo.py
 
+      # pkg.devkitpro.org at times answers GitHub's runners with 403 for a minute or so: try again
       - name: Libraries
-        run: dkp-pacman -Syu --noconfirm --needed switch-dev deko3d uam switch-sdl2 switch-openal-soft switch-zlib
+        run: |
+          for try in 1 2 3 4; do
+            dkp-pacman -Syu --noconfirm --needed switch-dev deko3d uam switch-sdl2 switch-openal-soft switch-zlib && exit 0
+            echo "::warning::the package server refused (try $try of 4), waiting"
+            sleep 45
+          done
+          exit 1
 
       - name: Build
         run: ./build.sh
