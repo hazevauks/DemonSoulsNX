@@ -84,7 +84,7 @@ Copy them to `SD_LOG/` in this repository to look at them. For a live log, start
 | Sources: Soulbrandt and ps3recomp, pinned, without keys | Done |
 | First-boot NRO (logs, memory check, game folder check) | Works on a console (firmware 22.5.0) |
 | The PS3's 4 GB address space on the Switch | Works on a console |
-| The game's files on the Switch (paths, inflating, SD card speed) | Built, **waiting on its console test** |
+| The game's files on the Switch (paths, inflating, SD card speed) | Works on a console |
 | The game's code on ARM64 and Horizon | **To do** |
 | deko3D renderer | **To do** |
 | Online play (co-op, invasions, messages) | **To do** |

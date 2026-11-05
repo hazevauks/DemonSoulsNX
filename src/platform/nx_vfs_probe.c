@@ -196,6 +196,7 @@ static void check_inflate(NxVfsProbe *out)
         free(data);
     }
     out->inflate_mbps = rate(inflated, us);
+    nx_log("files: inflating at %u MB/s on one core\n", out->inflate_mbps);
 }
 
 /* ---- the SD card's speed --------------------------------------------------------------- */

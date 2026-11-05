@@ -46,10 +46,26 @@ The second test, the same day, on the same console, tried guest memory the other
 | Everything unmapped and given back before the exit | yes |
 | The screen text | no longer in the log |
 
+The stage 2 test, the same day, on the same console and SD card:
+
+| What | Result |
+| --- | --- |
+| The game's first files by the PS3's paths (`/dev_bdvd`, `/app_home`) | 6 of 6 open and hold what they should |
+| `other/envLight.tpf`, the case the game asks for (the disc has `envlight.tpf`) | opens: the SD card ignores case |
+| A path out of the drives, and `/dev_flash` | both refused |
+| DCX files inflated with zlib on the console | 3 of 3: a shader archive, a texture pack, an animation archive |
+| A long read, 1 MB at a time | 75 MB/s |
+| A 64 KB read at a random place | 2.4 ms |
+| A small file: open, read 4 KB, close (251 files of one level) | 1.9 ms each |
+| The cache's way of writing: size set first, 8 MB in 64 KB pieces, flushed, read back, renamed, removed | works, **10 MB/s** |
+| Decrypted files on the card | the 26 scripts; `EBOOT.elf` and `libsre.prx` not yet |
+
 ## Not checked yet
 
-The stage 2 test NRO: the game's files on the console. The log's `files:` lines should end with
-`files: everything works`, with the SD card's speeds and which decrypted files are there.
+The game's cache on the SD card. The game copies files it loads into `/dev_hdd1` and reads the
+copies on later loads (Soulbrandt's docs/101: 173 copies during the load into 1-1). On the PS3
+that saved the disc's seeks; here the copies come from the same SD card, and writing runs at
+10 MB/s. Stage 11 measures what it costs a load, and the cache may move to memory.
 
 Which of the two copies the game opens (raw or `.dcx`): the runtime's log of opened files, on the
 first boot of the game.
@@ -63,8 +79,8 @@ leaves 64 KB pieces for stray touches; it will log how many pieces it maps.
 | Stage | State |
 | --- | --- |
 | 1. Extraction, asset structure, sources | **done**, both console tests passed |
-| 2. Asset packaging: paths, case, the file layer on Horizon, the decrypted inputs | **built**, checked on the PC, waiting on its console test |
-| 3. Engine dependencies: RSX/libgcm to deko3D, PPU/SPU threads to the Switch's cores | to do |
+| 2. Asset packaging: paths, case, the file layer on Horizon, the decrypted inputs | **done**, checked on the PC and the console |
+| 3. Engine dependencies: RSX/libgcm to deko3D, PPU/SPU threads to the Switch's cores | next |
 | 4. The port's build: ps3recomp's runtime and the lifted game with devkitA64 and CMake | to do |
 | 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | to do |
 | 6. POSIX layer, alignment, guest memory on the Switch's heap | to do |
