@@ -119,14 +119,18 @@ The counts match Soulbrandt's (94,017 PPU functions, 756 in libsre, the same TOC
 With a lift in `work/recomp`, CMake defines the game's target. It is never part of an ordinary build:
 
 ```bash
-cmake --build build --target demonsouls_game_nro -j 2
+cmake --build build --target demonsouls_game_nro -j 3
 ```
 
 It compiles the 57 chunks, the SPU images and libsre with Soulbrandt's flags (`-O2 -fwrapv
 -fno-strict-aliasing -ffp-contract=off`, without its x86 `-msse4.1`: `ps3emu/ps3_sse.h` gives the same
 operations on ARM), and links them with the host side, the runtime and the platform layer into
-`build/demonsouls_game.nro`. On the laptop above, one chunk takes about 6.6 minutes and 1.6 GB, so two
-at a time is what 12 GB of memory allows, about three hours in all.
+`build/demonsouls_game.nro`. On the laptop above, one chunk alone takes about 6.6 minutes and 1.6 GB.
+With the browser and other big programs closed, three at a time fit in its 12 GB: up to 4.6 GB between
+them, never under 2.4 GB free, no paging (measured over ten minutes). It has two cores with four
+threads, so the third job adds less than a core: about two and a half hours in all, against three
+with two jobs. Four would leave too little memory for the largest chunks (14 MB of C++). Only what
+changes is compiled again: the chunks only when the lift is made anew.
 
 `work/` is in `.gitignore`, and `tools/check_repo.py` refuses it. The NRO that comes out holds code
 made from your game: it stays on your PC and your console. `tools/make_sd.py` takes the libsre image
