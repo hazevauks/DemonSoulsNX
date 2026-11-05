@@ -140,6 +140,10 @@ extern "C" void ps3_install_guest_ptr_trap(void)
     fprintf(stderr, "[ps3] guest-pointer trap armed (%zu MB of the low 4 GB reserved)\n",
             got >> 20);
 }
+#elif defined(__SWITCH__)
+/* DemonSoulsNX: Horizon has no signals. A fault reaches the port's own exception entry
+ * (src/platform/nx_guest_fault.s), which reports it; there is nothing to arm here. */
+extern "C" void ps3_install_guest_ptr_trap(void) { }
 #else  /* POSIX */
 
 /* Both signals a fault in the reserved window can arrive on, each with its own

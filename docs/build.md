@@ -1,12 +1,13 @@
 # Building the port
 
-Stage 4 of the roadmap: the port's build, with devkitA64 and CMake. One `./build.sh` makes two
+Stage 4 of the roadmap: the port's build, with devkitA64 and CMake. One `./build.sh` makes three
 things today:
 
 | What | From | State |
 | --- | --- | --- |
 | `build/demonsouls.nro` | `src/` | the test NRO of stages 1 to 3 |
 | `build/third_party/ps3recomp/libps3recomp_runtime.a` | `third_party/ps3recomp`, built by its own CMake | builds for Horizon: all 307 sources |
+| `build/libdesnx_host.a` | ps3recomp's boot scaffold, the HLE NID table, Soulbrandt's game code | builds for Horizon: everything Soulbrandt's `des_boot` holds but the lifted code |
 
 The game itself joins in two more steps, below. Nothing built from the game ever goes in this
 repository, or in a release.
@@ -53,17 +54,38 @@ scaffold, which ps3recomp compiles with each game rather than into the library:
 | `runtime/ppu/game_host.c` | `vm_base`, `ps3_sjlj_thread_reset` |
 
 The 34th, `spurs_rt_alloc_queue`, is declared by `libs/spurs/spurs_runtime.c` and defined by no
-vendored file: the game build has to provide it, or leave that file out.
+vendored file. Nothing calls that file's functions, so an ordinary link leaves it out and never
+needs the symbol.
 
-## The host side (next)
+## The host side
 
 Soulbrandt builds the game as `des_boot` (its `port/CMakeLists.txt`): the lifted code, plus the boot
 scaffold (`runtime/ppu`: `ppu_loader`, `ppu_hle`, `ppu_fs`, `ppu_sysprx`, `tests/boot_main.cpp`),
-the NID table (`hle_nid_table.cpp`, made by ps3recomp's `tools/gen_hle_nids.py --all` from the
-runtime itself, not from the game), and its own game-specific code (`port/des_*.cpp`,
-`missing_stubs.cpp`). Its CI builds all of that with no lift (`DES_HOST_ONLY`). The Switch's next
-step is the same: everything but the lifted code, built for Horizon and linked into the NRO, with
-`boot_main.cpp`'s memory and exception handling going through `src/platform/nx_guest.c`.
+the NID table, and its own game-specific code (`port/des_*.cpp`, `missing_stubs.cpp`). Its CI builds
+all of that with no lift (`DES_HOST_ONLY`), and so does this build, as `desnx_host`, with the flags
+Soulbrandt uses (C17 and C++20, `-fwrapv -fno-strict-aliasing -ffp-contract=off`, no shadow stack,
+no developer cheats):
+
+- **The NID table** (`build/host/hle_nid_table.cpp`) is generated at build time by ps3recomp's
+  `tools/gen_hle_nids.py --all`, from the runtime's own modules, not from the game: 1,261 handlers
+  in 93 modules.
+- **No launcher UI.** Soulbrandt's PC launcher (`port/ui`) is not built; its own stand-in for a
+  build without it, `des_ui_stub.cpp`, is. Three calls into PC-only parts get the Switch's answers
+  in `src/platform/nx_port_glue.c`: the shader cache's folder (`sdmc:/switch/demonsouls/shader_cache`),
+  the problem report's per-frame hook (nothing: the Switch writes to `SD_LOG`) and the launcher's
+  icon mode (not available).
+- **One more guarded change** (third_party/README.md): `runtime/ppu/ppu_loader.cpp` arms a signal
+  trap for stray guest pointers; on Horizon there is nothing to arm, as faults reach the port's own
+  exception entry.
+- `pipe()` joins `src/hos/hos_compat.c`, failing with ENOSYS: its one caller, a check before a guest
+  memory dump, does without.
+
+Linked whole with the runtime, as before, the host side leaves exactly what the lift provides: the
+lifted code's `function_table` and `function_table_count`, and 60 lifted functions
+(`func_<address>`) that Soulbrandt's game code calls by name. Plus `spurs_rt_alloc_queue`, which an
+ordinary link never asks for. `boot_main.cpp` defines `main`, so in the game's NRO it is the entry
+point; its memory and exception handling still have to go through `src/platform/nx_guest.c`, which
+is stage 6.
 
 ## The game's code
 

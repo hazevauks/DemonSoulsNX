@@ -272,6 +272,15 @@ long sysconf(int name)
     }
 }
 
+/* No pipes on Horizon. The one caller, the PPU loader's check that guest memory is readable
+ * before it dumps it, reads as it would without the check. */
+int pipe(int fds[2])
+{
+    (void)fds;
+    errno = ENOSYS;
+    return -1;
+}
+
 int posix_memalign(void **out, size_t alignment, size_t size)
 {
     if (alignment < sizeof(void *) || (alignment & (alignment - 1)) != 0)

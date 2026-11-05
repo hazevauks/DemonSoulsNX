@@ -67,6 +67,67 @@ if(DESNX_RUNTIME)
 endif()
 
 # ---------------------------------------------------------------------------
+# The host side of the game's build: everything Soulbrandt's des_boot holds but the lifted code.
+# ps3recomp's PPU boot scaffold, the HLE NID table (made from the runtime's own modules, not
+# from the game) and Soulbrandt's game-specific code, with the flags Soulbrandt builds them with
+# (its port/CMakeLists.txt). docs/build.md.
+# ---------------------------------------------------------------------------
+option(DESNX_HOST "Build the host side of the game (with DESNX_RUNTIME)" ON)
+if(DESNX_RUNTIME AND DESNX_HOST)
+	find_package(Python3 REQUIRED COMPONENTS Interpreter)
+	set(PS3RECOMP ${CMAKE_SOURCE_DIR}/third_party/ps3recomp)
+	set(SOULBRANDT_PORT ${CMAKE_SOURCE_DIR}/third_party/soulbrandt/port)
+
+	add_custom_command(
+		OUTPUT ${CMAKE_BINARY_DIR}/host/hle_nid_table.cpp
+		COMMAND ${Python3_EXECUTABLE} -I ${PS3RECOMP}/tools/gen_hle_nids.py --all --out ${CMAKE_BINARY_DIR}/host/hle_nid_table.cpp
+		DEPENDS ${PS3RECOMP}/tools/gen_hle_nids.py
+		WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+		COMMENT "Generating the HLE NID table from the runtime's modules"
+		VERBATIM
+	)
+
+	add_library(desnx_host STATIC
+		${CMAKE_BINARY_DIR}/host/hle_nid_table.cpp
+		${PS3RECOMP}/runtime/ppu/ppu_loader.cpp
+		${PS3RECOMP}/runtime/ppu/ppu_hle.cpp
+		${PS3RECOMP}/runtime/ppu/ppu_fs.cpp
+		${PS3RECOMP}/runtime/ppu/ppu_sysprx.cpp
+		${PS3RECOMP}/runtime/ppu/tests/boot_main.cpp
+		${SOULBRANDT_PORT}/missing_stubs.cpp
+		${SOULBRANDT_PORT}/des_heap.cpp
+		${SOULBRANDT_PORT}/des_options.cpp
+		${SOULBRANDT_PORT}/des_aspect.cpp
+		${SOULBRANDT_PORT}/des_hud.cpp
+		${SOULBRANDT_PORT}/des_menu_mouse.cpp
+		${SOULBRANDT_PORT}/des_menu_sfx.cpp
+		${SOULBRANDT_PORT}/des_chrins.cpp
+		${SOULBRANDT_PORT}/des_souls_use.cpp
+		${SOULBRANDT_PORT}/des_respec.cpp
+		${SOULBRANDT_PORT}/des_prework.cpp
+		${SOULBRANDT_PORT}/des_route.cpp
+		${SOULBRANDT_PORT}/des_ui_stub.cpp      # no launcher UI: Soulbrandt's own build without it
+		${CMAKE_SOURCE_DIR}/src/platform/nx_port_glue.c
+	)
+	set_target_properties(desnx_host PROPERTIES C_STANDARD 17 CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+	target_include_directories(desnx_host BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/src/hos/include)
+	target_include_directories(desnx_host PRIVATE
+		${PS3RECOMP}/include ${PS3RECOMP}/runtime/ppu ${PS3RECOMP}/libs/video
+		${SOULBRANDT_PORT}/ui/include ${CMAKE_SOURCE_DIR}/src/platform
+		${DEVKITPRO}/portlibs/switch/include)
+	target_compile_options(desnx_host PRIVATE
+		-include ${CMAKE_SOURCE_DIR}/src/hos/hos_compat.h
+		-fwrapv -fno-strict-aliasing -ffp-contract=off
+		-Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-label
+		-Wno-unused-but-set-variable)
+	# a lift without a shadow stack, and no developer cheats (Soulbrandt's defaults)
+	target_compile_definitions(desnx_host PRIVATE _GNU_SOURCE DS_NO_SHADOW_STACK)
+	set_property(SOURCE ${SOULBRANDT_PORT}/des_options.cpp ${SOULBRANDT_PORT}/des_menu_sfx.cpp
+		APPEND PROPERTY COMPILE_DEFINITIONS DES_DEV=0)
+	target_link_libraries(desnx_host PUBLIC ps3recomp_runtime)
+endif()
+
+# ---------------------------------------------------------------------------
 # The NRO. For now a test shell with no game code (docs/status.md).
 # ---------------------------------------------------------------------------
 # nx_guest_fault.s replaces libnx's exception entry, so it is linked as an object: from the

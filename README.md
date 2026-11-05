@@ -85,7 +85,7 @@ Copy them to `SD_LOG/` in this repository to look at them. For a live log, start
 | First-boot NRO (logs, memory check, game folder check) | Works on a console (firmware 22.5.0) |
 | The PS3's 4 GB address space on the Switch | Works on a console |
 | The game's files on the Switch (paths, inflating, SD card speed) | Works on a console |
-| The game's code on ARM64 and Horizon | ps3recomp's runtime builds; the game's own code **to do** |
+| The game's code on ARM64 and Horizon | ps3recomp's runtime and the host side build; the lifted game **to do** |
 | deko3D renderer | **To do**; its base (device, swapchain, uam shaders) works on a console |
 | Online play (co-op, invasions, messages) | **To do** |
 | 30 fps at 1020/460/1331 MHz | **Not measured yet** |
