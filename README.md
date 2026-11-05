@@ -22,7 +22,7 @@ to run natively, with a [deko3D](https://github.com/devkitPro/deko3d) renderer.
 ---
 
 > [!WARNING]
-> Early work: stage 2 of the [roadmap](docs/status.md). The game does not run yet. Today's NRO
+> Early work: stage 3 of the [roadmap](docs/status.md). The game does not run yet. Today's NRO
 > checks the console and your game's files, and writes a log.
 
 This repository has no game files and no game code. You need your own copy of Demon's Souls.
@@ -86,7 +86,7 @@ Copy them to `SD_LOG/` in this repository to look at them. For a live log, start
 | The PS3's 4 GB address space on the Switch | Works on a console |
 | The game's files on the Switch (paths, inflating, SD card speed) | Works on a console |
 | The game's code on ARM64 and Horizon | **To do** |
-| deko3D renderer | **To do** |
+| deko3D renderer | **To do**; its base (device, swapchain, uam shaders) is built, **waiting on its console test** |
 | Online play (co-op, invasions, messages) | **To do** |
 | 30 fps at 1020/460/1331 MHz | **Not measured yet** |
 

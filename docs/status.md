@@ -62,6 +62,9 @@ The stage 2 test, the same day, on the same console and SD card:
 
 ## Not checked yet
 
+The stage 3 test NRO: two seconds of a triangle through deko3D with shaders uam built, and the
+cores (docs/engine.md). The log's `gpu:` and `cpu:` lines have the results.
+
 The game's cache on the SD card. The game copies files it loads into `/dev_hdd1` and reads the
 copies on later loads (Soulbrandt's docs/101: 173 copies during the load into 1-1). On the PS3
 that saved the disc's seeks; here the copies come from the same SD card, and writing runs at
@@ -80,7 +83,7 @@ leaves 64 KB pieces for stray touches; it will log how many pieces it maps.
 | --- | --- |
 | 1. Extraction, asset structure, sources | **done**, both console tests passed |
 | 2. Asset packaging: paths, case, the file layer on Horizon, the decrypted inputs | **done**, checked on the PC and the console |
-| 3. Engine dependencies: RSX/libgcm to deko3D, PPU/SPU threads to the Switch's cores | next |
+| 3. Engine dependencies: RSX/libgcm to deko3D, PPU/SPU threads to the Switch's cores | **mapped** (docs/engine.md), its console test waiting |
 | 4. The port's build: ps3recomp's runtime and the lifted game with devkitA64 and CMake | to do |
 | 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | to do |
 | 6. POSIX layer, alignment, guest memory on the Switch's heap | to do |

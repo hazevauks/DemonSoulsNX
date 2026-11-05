@@ -56,6 +56,10 @@ The guest memory test touches memory nothing has mapped yet, on purpose. If the 
 `touching unmapped guest memory`, faults do not reach the NRO and the console shows an error; the
 log up to there is what is needed.
 
+Stage 3 starts with two seconds of a triangle on a dark screen: that is deko3D, before the text
+screen. Its `gpu:` lines give the frames and their timing, and the `cpu:` lines the cores, how
+fast threads wake each other, and how accurate a short sleep is.
+
 Stage 2 adds the `files:` lines: the game's first files opened by the PS3's paths (one in the
 mixed case the game uses), three DCX files inflated, the SD card's speed for a long read, a seek
 and a small file, the game's way of writing its cache (in `hdd1/`, removed again), and which of the

@@ -4,22 +4,26 @@
  * stage 1, that the NRO starts, that logs reach SD_LOG, how much memory the process gets, and
  * that the PS3's 4 GB address space maps in it (nx_guest.c); stage 2, that the game's files
  * open by the PS3's paths, inflate, read and write at a usable speed, and which of the files
- * decrypted on the PC are there (nx_vfs_probe.c). The recompiled game takes over from here
- * in a later stage (docs/status.md).
+ * decrypted on the PC are there (nx_vfs_probe.c); stage 3, that deko3D draws with shaders uam
+ * built (nx_gpu_probe.c), and what the cores give the game's threads (nx_cpu_probe.c). The
+ * recompiled game takes over from here in a later stage (docs/status.md).
  */
 
 #include <stdio.h>
 
 #include <switch.h>
 
+#include "platform/nx_cpu.h"
 #include "platform/nx_data.h"
+#include "platform/nx_gpu.h"
 #include "platform/nx_guest.h"
 #include "platform/nx_log.h"
 #include "platform/nx_paths.h"
 #include "platform/nx_system.h"
 #include "platform/nx_vfs.h"
 
-static void show(const NxSystem *system, const NxGuestProbe *guest, const NxData *data, const NxVfsProbe *files)
+static void show(const NxSystem *system, const NxGuestProbe *guest, const NxGpuProbe *gpu, const NxCpuProbe *cpu,
+                 const NxData *data, const NxVfsProbe *files)
 {
     printf("\x1b[1;1H\x1b[2J");
     printf("Demon's Souls for Nintendo Switch %s\n", DESNX_VERSION);
@@ -30,9 +34,15 @@ static void show(const NxSystem *system, const NxGuestProbe *guest, const NxData
     printf("Launch mode:  %s\n", system->application ? "application (full memory)" : "applet: start it through a forwarder or title takeover");
     printf("Memory:       %lu MB for the game\n", (unsigned long)(system->memory_total >> 20));
     if (!guest->failed)
-        printf("Guest memory: works (%d-bit space, %u faults answered)\n\n", guest->address_bits, guest->faults);
+        printf("Guest memory: works (%d-bit space, %u faults answered)\n", guest->address_bits, guest->faults);
     else
-        printf("Guest memory: failed at %s,\n              see the log\n\n", guest->failed);
+        printf("Guest memory: failed at %s,\n              see the log\n", guest->failed);
+    if (!gpu->failed)
+        printf("GPU:          deko3D works, %u frames at %u.%u ms\n", gpu->frames, gpu->frame_us / 1000,
+               gpu->frame_us / 100 % 10);
+    else
+        printf("GPU:          failed at %s\n", gpu->failed);
+    printf("Cores:        %u for the game, a wake takes %u us\n\n", cpu->cores, (cpu->wake_cross_ns + 500) / 1000);
 
     if (!data->found)
         printf("Game files:   not found. Copy the game's folder to\n              " NX_GAME_DIR "/\n");
@@ -65,6 +75,10 @@ int main(int argc, char **argv)
 
     nx_log_init(DESNX_VERSION);
     nx_vfs_init();
+
+    /* deko3D first: it takes the window for two seconds, then gives it to the text console */
+    NxGpuProbe gpu;
+    nx_gpu_probe(&gpu);
     consoleInit(NULL);
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad;
@@ -77,6 +91,9 @@ int main(int argc, char **argv)
     NxGuestProbe guest;
     nx_guest_probe(&guest);
 
+    NxCpuProbe cpu;
+    nx_cpu_probe(&cpu);
+
     NxData data;
     nx_data_check(&data);
     nx_data_log(&data);
@@ -87,7 +104,7 @@ int main(int argc, char **argv)
     if (data.found && data.right_version)
         nx_vfs_probe(&files);
 
-    show(&system, &guest, &data, &files);
+    show(&system, &guest, &gpu, &cpu, &data, &files);
     while (appletMainLoop()) {
         padUpdate(&pad);
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus)

@@ -58,14 +58,14 @@ These decide whether the port works, and each has its own stage.
    512 MB mapped and zeroed in 90 ms, a 64 KB piece in 20 µs, a fault answered in 28 µs. Each
    piece stays a block of its own for the kernel, whose supply of blocks is limited, so the
    runtime maps the game's memory in large ranges and leaves pieces for stray touches.
-2. **Cores.** The PS3 runs the game on a two-thread PPU and six SPUs. The Switch gives a game three
+2. **Cores** ([engine.md](engine.md)). The PS3 runs the game on a two-thread PPU and six SPUs. The Switch gives a game three
    1 GHz Cortex-A57 cores (a fourth in part). The SPU programs become host tasks, and the game's
    own threads share the cores. Soulbrandt's notes show HighGraphics waiting in libsre's queue for
    73-75% of its time, so the threads' waits matter more than raw speed.
 3. **Size of the code.** The lift is 437 MB of C++ in 94,017 functions (Soulbrandt's docs/53), and
    its Windows build has 272 MB of machine code, of which only about 12 MB is hot. An NRO of that
    size fits in the 3.2 GB an application gets, but it is loaded whole, and the build takes hours.
-4. **The renderer.** Soulbrandt draws through Direct3D 12 or Vulkan from shaders it translates from
+4. **The renderer** ([engine.md](engine.md)). Soulbrandt draws through Direct3D 12 or Vulkan from shaders it translates from
    the RSX's programs to HLSL. The Switch needs the same programs as GLSL for `uam`, compiled ahead of
    time on the PC from the programs the game uses, and a deko3D backend for ps3recomp's RSX layer.
 5. **30 fps at 1020/460/1331 MHz.** Not known yet. Recompiled code pays for byte swaps and the

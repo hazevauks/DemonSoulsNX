@@ -23,10 +23,19 @@ set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
 add_compile_options(-Wall -Wextra -fno-omit-frame-pointer)
 
 # ---------------------------------------------------------------------------
-# Switch platform layer: logs, the console's memory, guest memory, the game's files
+# deko3D shaders: compiled by uam at build time, embedded in the NRO
+# ---------------------------------------------------------------------------
+nx_add_shader_program(triangle_vsh src/shaders/triangle_vsh.glsl vert)
+nx_add_shader_program(triangle_fsh src/shaders/triangle_fsh.glsl frag)
+dkp_add_embedded_binary_library(desnx_shaders triangle_vsh triangle_fsh)
+
+# ---------------------------------------------------------------------------
+# Switch platform layer: logs, memory, guest memory, files, the GPU and the cores
 # ---------------------------------------------------------------------------
 add_library(desnx_platform STATIC
+	src/platform/nx_cpu_probe.c
 	src/platform/nx_data.c
+	src/platform/nx_gpu_probe.c
 	src/platform/nx_guest.c
 	src/platform/nx_log.c
 	src/platform/nx_system.c
@@ -37,7 +46,7 @@ target_include_directories(desnx_platform PUBLIC src)
 # ps3recomp's header-only checks on game paths (ps3emu/vfs_path.h)
 target_include_directories(desnx_platform PRIVATE third_party/ps3recomp/include)
 find_package(ZLIB REQUIRED)    # switch-zlib, from portlibs
-target_link_libraries(desnx_platform PUBLIC ZLIB::ZLIB)
+target_link_libraries(desnx_platform PUBLIC ZLIB::ZLIB deko3d PRIVATE desnx_shaders)
 
 # ---------------------------------------------------------------------------
 # The NRO. For now a test shell with no game code (docs/status.md).
