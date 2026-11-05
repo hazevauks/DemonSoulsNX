@@ -146,3 +146,58 @@ nx_create_nro(demonsouls
 	NACP demonsouls.nacp
 	ICON ${CMAKE_SOURCE_DIR}/assets/icon.jpg
 )
+
+# ---------------------------------------------------------------------------
+# The game: the lifted code, made on this PC from your EBOOT (docs/build.md), with the host side
+# and the runtime. Defined only when work/recomp holds a lift, so CI never has it. What it makes
+# holds code from your game: it never goes in the repository or a release.
+# ---------------------------------------------------------------------------
+set(DESNX_LIFT_DIR ${CMAKE_SOURCE_DIR}/work CACHE PATH "the lift's folder")
+file(GLOB DESNX_PPU_CHUNKS CONFIGURE_DEPENDS ${DESNX_LIFT_DIR}/recomp/ppu_recomp_*.cpp)
+if(TARGET desnx_host AND DESNX_PPU_CHUNKS)
+	file(GLOB DESNX_SPU_CHUNKS CONFIGURE_DEPENDS ${DESNX_LIFT_DIR}/spu/*/spu_recomp.c)
+	set(DESNX_GAME_SOURCES ${DESNX_PPU_CHUNKS} ${DESNX_SPU_CHUNKS})
+	if(EXISTS ${DESNX_LIFT_DIR}/spu/_gen/spu_workloads.cpp)
+		list(APPEND DESNX_GAME_SOURCES ${DESNX_LIFT_DIR}/spu/_gen/spu_workloads.cpp)
+	endif()
+	# libsre's SPURS kernel, lifted from your firmware's copy: the lifter writes C++ into a .c file
+	set(DESNX_LIBSRE_LIFTED ${DESNX_LIFT_DIR}/libsre/lifted/ppu_recomp.c)
+	set(DESNX_LIBSRE_GLUE ${DESNX_LIFT_DIR}/libsre/libsre_glue.c)
+	if(EXISTS ${DESNX_LIBSRE_LIFTED} AND EXISTS ${DESNX_LIBSRE_GLUE})
+		set_source_files_properties(${DESNX_LIBSRE_LIFTED} PROPERTIES LANGUAGE CXX)
+		set_source_files_properties(${DESNX_LIBSRE_GLUE} PROPERTIES INCLUDE_DIRECTORIES ${PS3RECOMP}/runtime/prx)
+		list(APPEND DESNX_GAME_SOURCES ${DESNX_LIBSRE_LIFTED} ${DESNX_LIBSRE_GLUE} ${PS3RECOMP}/runtime/prx/prx_loader.c)
+	endif()
+	list(LENGTH DESNX_PPU_CHUNKS DESNX_N_PPU)
+	list(LENGTH DESNX_SPU_CHUNKS DESNX_N_SPU)
+	message(STATUS "Game: ${DESNX_N_PPU} lifted PPU chunks, ${DESNX_N_SPU} lifted SPU images")
+
+	add_executable(demonsouls_game ${DESNX_GAME_SOURCES} src/platform/nx_guest_fault.s)
+	set_target_properties(demonsouls_game PROPERTIES C_STANDARD 17 CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+	target_include_directories(demonsouls_game BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/src/hos/include)
+	target_include_directories(demonsouls_game PRIVATE
+		${DESNX_LIFT_DIR}/recomp ${PS3RECOMP}/include ${PS3RECOMP}/runtime/ppu ${PS3RECOMP}/runtime/spu
+		${PS3RECOMP}/libs/video)
+	# Soulbrandt's flags for the lifted code (its port/CMakeLists.txt), without its x86 SSE4.1:
+	# ps3emu/ps3_sse.h gives the same operations on ARM
+	target_compile_options(demonsouls_game PRIVATE
+		$<$<COMPILE_LANGUAGE:C,CXX>:-include ${CMAKE_SOURCE_DIR}/src/hos/hos_compat.h>
+		-O2 -fwrapv -fno-strict-aliasing -ffp-contract=off
+		-Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-label
+		-Wno-unused-but-set-variable)
+	target_compile_definitions(demonsouls_game PRIVATE _GNU_SOURCE DS_NO_SHADOW_STACK)
+	target_link_libraries(demonsouls_game PRIVATE desnx_host desnx_platform nx m)
+	target_link_options(demonsouls_game PRIVATE -Wl,-Map=${CMAKE_BINARY_DIR}/demonsouls_game.map -Wl,--gc-sections)
+	# Hours to compile on a laptop, so only on request: cmake --build build --target demonsouls_game_nro
+	# (nx_create_nro would put it in every build).
+	set_target_properties(demonsouls_game PROPERTIES EXCLUDE_FROM_ALL ON)
+	add_custom_command(
+		OUTPUT ${CMAKE_BINARY_DIR}/demonsouls_game.nro
+		COMMAND ${NX_ELF2NRO_EXE} $<TARGET_FILE:demonsouls_game> ${CMAKE_BINARY_DIR}/demonsouls_game.nro
+			--icon=${CMAKE_SOURCE_DIR}/assets/icon.jpg --nacp=${CMAKE_BINARY_DIR}/demonsouls.nacp
+		DEPENDS demonsouls_game ${CMAKE_SOURCE_DIR}/assets/icon.jpg ${CMAKE_BINARY_DIR}/demonsouls.nacp
+		COMMENT "Building the game's NRO"
+		VERBATIM
+	)
+	add_custom_target(demonsouls_game_nro DEPENDS ${CMAKE_BINARY_DIR}/demonsouls_game.nro)
+endif()

@@ -39,8 +39,6 @@ def main():
     parser.add_argument("--nro", type=pathlib.Path, default=ROOT / "build" / "demonsouls.nro")
     parser.add_argument("--game", type=pathlib.Path, default=ROOT / "game_data" / "disc",
                         help="the folder tools/extract_game.py wrote")
-    parser.add_argument("--firmware", type=pathlib.Path, default=ROOT / "game_data" / "firmware",
-                        help="where tools/check_inputs.py put libsre.prx")
     parser.add_argument("--no-game", action="store_true", help="only put the NRO in place")
     args = parser.parse_args()
 
@@ -65,12 +63,14 @@ def main():
         placed += place(source, app / "game" / relative)
     print("game: %d files in %s (%d new or changed)" % (total, (APP / "game").as_posix(), placed))
 
-    libsre = args.firmware / "libsre.prx"
-    if libsre.is_file():
-        place(libsre, app / "firmware" / "libsre.prx")
-        print("firmware: %s" % (APP / "firmware" / "libsre.prx").as_posix())
+    # what the lifted libsre's glue loads at run time (PS3_LIBSRE_IMAGE, src/platform/nx_vfs.c):
+    # the image scripts/build_libsre.py made from your libsre.prx (docs/build.md)
+    image = ROOT / "work" / "libsre" / "libsre_image.bin"
+    if image.is_file():
+        place(image, app / "firmware" / "libsre_image.bin")
+        print("firmware: %s" % (APP / "firmware" / "libsre_image.bin").as_posix())
     else:
-        print("firmware: no libsre.prx yet (tools/check_inputs.py)")
+        print("firmware: no libsre image yet (the libsre lift, docs/build.md)")
     return 0
 
 

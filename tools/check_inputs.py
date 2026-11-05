@@ -51,6 +51,16 @@ def place(source, target):
         shutil.copy2(source, target)
 
 
+def soulbrandt_firmware():
+    """Soulbrandt's own check for a libsre.prx from another system software version
+    (des_setup/firmware.py): the file differs only in the version written into its code."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("des_firmware", TABLE.parent / "firmware.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("folders", nargs="*", type=pathlib.Path, help="where RPCS3 wrote the decrypted files")
@@ -82,6 +92,26 @@ def main():
             elif looks_wanted:
                 wrong.append(path)
 
+    # libsre.prx from another system software version: its version is set back to the one the
+    # table's sum is for, and the whole file must then match the sum, as Soulbrandt's setup does
+    adapted = []
+    firmware = soulbrandt_firmware()
+    for entry in table["firmware"]:
+        key = (entry["size"], entry["sha256"])
+        for path in [p for p in wrong if key not in found and p.name.lower() == entry["name"].lower()]:
+            result = firmware.matched(path, entry)
+            if result:
+                fixed, own = result
+                target = FIRMWARE / entry["name"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    target.unlink()
+                target.write_bytes(fixed)
+                found[key] = target
+                wrong.remove(path)
+                adapted.append((entry["name"], firmware.name(own), firmware.name(int(entry["version"], 16)),
+                                len(firmware.places(fixed))))
+
     plain = 0
     for name, size, digest, target in wanted:
         source = found.get((size, digest))
@@ -94,6 +124,9 @@ def main():
     print("%d of %d decrypted files found and in place" % (have, len(wanted)))
     if plain:
         print("  %d script files needed no decryption: the disc has each one unencrypted beside its .sdat" % plain)
+    for name, own, want, count in adapted:
+        print("  %s is from system software %s: with its version set to %s's (%d places in its code), "
+              "it is the file the port is tested with" % (name, own, want, count))
     for name, size, digest, target in wanted:
         if (size, digest) not in found:
             print("  missing: %s" % target.relative_to(ROOT).as_posix())

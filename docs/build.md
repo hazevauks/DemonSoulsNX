@@ -91,16 +91,43 @@ is stage 6.
 
 The lift runs on the PC, with ps3recomp's Python lifters, as Soulbrandt's README and its docs/52 lay
 it out. It needs `EBOOT.elf` and `libsre.prx`, decrypted with your own RPCS3 and put in place by
-`tools/check_inputs.py`:
+`tools/check_inputs.py`. Any system software version's libsre will do: it differs from the 4.86
+copy Soulbrandt is tested with only in the version written into its code, 86 times, so
+`tools/check_inputs.py` sets that back (Soulbrandt's own `des_setup/firmware.py`) and the file must
+then match Soulbrandt's hash exactly.
 
-| Step | Tool | Writes |
-| --- | --- | --- |
-| analyse the EBOOT | `ppu_loader.py EBOOT.elf` | `work/loader/` |
-| lift the PPU code | `ppu_lifter.py`, with Soulbrandt's flags (`scripts/lift_ppu.json`: four overridden functions, `port/insn_hooks.txt`, a shadow stack, 150,000-line chunks) | `work/recomp/ppu_recomp_*.cpp`, about 437 MB |
-| boot patches | `scripts/apply_boot_patches.py` | `work/recomp/` |
-| lift the SPU programs | `scripts/build_spu.py` (`spu_lifter.py`) | `work_spu/*/spu_recomp.c` |
-| lift libsre's SPURS kernel | `scripts/build_libsre.sh libsre.prx` | `work/libsre/` |
+The lifters need ps3recomp's Python packages (`third_party/ps3recomp/requirements.txt`), kept in a
+virtual environment of their own:
 
-Then devkitA64 compiles all of it into the NRO. `work/` is in `.gitignore`, and
-`tools/check_repo.py` refuses it. The NRO that comes out holds code made from your game: it stays on
-your PC and your console.
+```bash
+python -m venv work/venv
+work/venv/Scripts/python -m pip install -r third_party/ps3recomp/requirements.txt
+```
+
+Then, from the repository's folder (`work/venv/Scripts/python` for `python`):
+
+| Step | Command | Writes | On a 2-core laptop (i5-3210M) |
+| --- | --- | --- | --- |
+| analyse the EBOOT | `third_party/ps3recomp/tools/ppu_loader.py game_data/disc/PS3_GAME/USRDIR/EBOOT.elf -o work/loader` | `work/loader/` | 16 s |
+| lift the PPU code | `third_party/ps3recomp/tools/ppu_lifter.py` with Soulbrandt's flags (its README, `scripts/lift_ppu.json`), `--insn-hooks @third_party/soulbrandt/port/insn_hooks.txt --output work/recomp -j 4` | `work/recomp/`: 94,017 functions in 57 chunks, 470 MB | 5.4 min |
+| boot patches | `third_party/soulbrandt/scripts/apply_boot_patches.py work/recomp` | 1 patch | seconds |
+| lift the SPU programs | `third_party/soulbrandt/scripts/build_spu.py --eboot <EBOOT.elf> --elf-dir work/spu_images --job-dir work/spu_jobs --ps3recomp third_party/ps3recomp --out-dir work/spu -j 4` | `work/spu/`: 12 images and 2 SPURS jobs, each checked by its fingerprint | 1.1 min |
+| lift libsre | `third_party/soulbrandt/scripts/build_libsre.py game_data/firmware/libsre.prx --ps3recomp third_party/ps3recomp --work work/libsre --glue work/libsre/libsre_glue.c --runtime-image sdmc:/switch/demonsouls/firmware/libsre_image.bin` | `work/libsre/`: 756 functions, TOC 0x30039AB0 | 34 s |
+
+The counts match Soulbrandt's (94,017 PPU functions, 756 in libsre, the same TOC).
+
+With a lift in `work/recomp`, CMake defines the game's target. It is never part of an ordinary build:
+
+```bash
+cmake --build build --target demonsouls_game_nro -j 2
+```
+
+It compiles the 57 chunks, the SPU images and libsre with Soulbrandt's flags (`-O2 -fwrapv
+-fno-strict-aliasing -ffp-contract=off`, without its x86 `-msse4.1`: `ps3emu/ps3_sse.h` gives the same
+operations on ARM), and links them with the host side, the runtime and the platform layer into
+`build/demonsouls_game.nro`. On the laptop above, one chunk takes about 6.6 minutes and 1.6 GB, so two
+at a time is what 12 GB of memory allows, about three hours in all.
+
+`work/` is in `.gitignore`, and `tools/check_repo.py` refuses it. The NRO that comes out holds code
+made from your game: it stays on your PC and your console. `tools/make_sd.py` takes the libsre image
+to `firmware/` on the SD card, where its glue looks (`PS3_LIBSRE_IMAGE`).

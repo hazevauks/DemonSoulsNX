@@ -12,7 +12,8 @@ extern "C" {
 #endif
 
 /* Creates the folders behind the PS3's drives and tells ps3recomp's file layer where they are:
- * PS3_VFS_ROOT (/dev_bdvd and /app_home), PS3_HDD0_ROOT, PS3_HDD1_ROOT and PS3_LIBSRE_IMAGE. */
+ * PS3_VFS_ROOT (/dev_bdvd and /app_home), PS3_HDD0_ROOT, PS3_HDD1_ROOT, and PS3_LIBSRE_IMAGE
+ * (the lifted libsre's image, for its glue). */
 void nx_vfs_init(void);
 
 /* A path as the game asks for it ("/dev_bdvd/PS3_GAME/USRDIR/...") as a path on the SD card,

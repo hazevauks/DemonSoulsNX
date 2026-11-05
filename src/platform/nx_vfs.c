@@ -42,7 +42,8 @@ void nx_vfs_init(void)
     setenv("PS3_VFS_ROOT", NX_GAME_DIR, 1);
     setenv("PS3_HDD0_ROOT", NX_HDD0_DIR, 1);
     setenv("PS3_HDD1_ROOT", NX_HDD1_DIR, 1);
-    setenv("PS3_LIBSRE_IMAGE", NX_FIRMWARE_DIR "/libsre.prx", 1);
+    /* the image tools/make_sd.py copies from the lift of libsre (work/libsre/libsre_image.bin) */
+    setenv("PS3_LIBSRE_IMAGE", NX_FIRMWARE_DIR "/libsre_image.bin", 1);
 }
 
 /* path is `drive` or below it; *rest is what follows the drive's '/'. */
