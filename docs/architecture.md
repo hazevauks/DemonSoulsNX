@@ -78,7 +78,7 @@ These decide whether the port works, and each has its own stage.
 
 | Folder | What |
 | --- | --- |
-| `src/` | our own code: the Switch platform layer and, for now, the first-boot NRO |
+| `src/` | our own code: the Switch platform layer, `src/hos` (what ps3recomp's runtime needs from Horizon) and, for now, the test NRO |
 | `third_party/ps3recomp/` | the recompiler and runtime, as Soulbrandt pins it, without its keys (third_party/README.md) |
 | `third_party/soulbrandt/` | the PC port: lift scripts, game-specific code, documentation |
 | `tools/` | extraction, checks, the SD card |

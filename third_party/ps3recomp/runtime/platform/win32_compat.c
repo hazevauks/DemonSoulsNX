@@ -804,7 +804,13 @@ static void ctx_to_uc(ucontext_t* uc, const CONTEXT* c, int all)
  * SuspendThread is holding s_lock for, and a thread whose routine has already
  * returned has cleared its own thread-local while still being alive enough to
  * take the signal. */
-#if !defined(__APPLE__)
+#if defined(__SWITCH__)
+/* DemonSoulsNX: Horizon has no signals to park a thread with, so SuspendThread fails there
+ * (the Win32 failure callers already check) until the port stops threads with
+ * svcSetThreadActivity. */
+static int park_thread_locked(ps3_obj* t) { (void)t; return 0; }
+static void unpark_thread_locked(ps3_obj* t) { (void)t; }
+#elif !defined(__APPLE__)
 static ps3_obj* s_park_target;               /* set under s_lock */
 static int      s_park_installed;
 
@@ -1723,6 +1729,7 @@ static ps3_veh_node*   s_veh_head;                    /* atomic */
 static LPTOP_LEVEL_EXCEPTION_FILTER s_top_filter;     /* atomic */
 static pthread_mutex_t s_veh_lock = PTHREAD_MUTEX_INITIALIZER;
 
+#if !defined(__SWITCH__)
 static struct sigaction s_prev_action[PS3_SIG_MAX];
 static int              s_prev_valid[PS3_SIG_MAX];
 static int              s_sig_installed;
@@ -1937,6 +1944,12 @@ static void veh_install_locked(void)
         }
     }
 }
+#else
+/* DemonSoulsNX: Horizon delivers faults to the process's exception entry, not to signal
+ * handlers (src/platform/nx_guest_fault.s). Handlers are registered as everywhere, and
+ * called once that entry hands faults to this list. */
+static void veh_install_locked(void) { }
+#endif /* !__SWITCH__ */
 
 PVOID AddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER handler)
 {

@@ -14,6 +14,7 @@ What has been checked, and how. Nothing here counts as working until a console h
 | No keys in the vendored sources | the key tables and the code that used them are removed, `tools/check_repo.py` looks for key tables |
 | The NRO builds: name, author and icon | `tools/check_nro.py`: Demon's Souls, hazevauks, 256x256 JPEG |
 | The repository holds no game data or personal data | `tools/check_repo.py`, also on CI |
+| ps3recomp's runtime builds for Horizon: 307 sources, and linked whole it needs only the boot scaffold's 33 symbols and one more | `./build.sh`, docs/build.md |
 | Every compressed file inflates: 3,600 DCX and DCP files, 1,750 MB to 3,067 MB | `tools/check_archives.py` |
 | 3,585 raw files are byte for byte their `.dcx` (3.01 GB); 3 differ | `tools/check_archives.py` |
 | The 26 encrypted scripts are on the disc unencrypted too, with the bytes decrypting gives | `tools/check_inputs.py`, against Soulbrandt's hashes |
@@ -96,7 +97,7 @@ leaves 64 KB pieces for stray touches; it will log how many pieces it maps.
 | 1. Extraction, asset structure, sources | **done**, both console tests passed |
 | 2. Asset packaging: paths, case, the file layer on Horizon, the decrypted inputs | **done**, checked on the PC and the console |
 | 3. Engine dependencies: RSX/libgcm to deko3D, PPU/SPU threads to the Switch's cores | **done** (docs/engine.md), checked on the console |
-| 4. The port's build: ps3recomp's runtime and the lifted game with devkitA64 and CMake | next: needs `EBOOT.elf` and `libsre.prx` from RPCS3 |
+| 4. The port's build: ps3recomp's runtime and the lifted game with devkitA64 and CMake | **started**: the runtime builds for Horizon (docs/build.md); next the host side, then the lift (needs `EBOOT.elf` and `libsre.prx` from RPCS3) |
 | 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | to do |
 | 6. POSIX layer, alignment, guest memory on the Switch's heap | to do |
 | 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | to do |

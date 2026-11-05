@@ -22,5 +22,7 @@ SDATA/EDAT and PKG keys, and its history once held decrypted firmware; neither i
 | `ps3recomp/libs/filesystem/edat.h`: the comment on keys | the same |
 | removed `ps3recomp/tools/pkg_extract.py`, `extract_jobmods.py`, `test_pkg_extract.py`, `triage_protos.py` and `libs/filesystem/tests/test_edat_paths.c` | they hold or need the keys |
 | removed `ps3recomp/scratch/`, `ps3recomp/.github/`, `soulbrandt/.github/`, `soulbrandt/.claude/`, `soulbrandt/.trail/` | notes and CI of the original projects, with paths from their authors' machines |
+| `ps3recomp/runtime/platform/win32_compat.c`: on `__SWITCH__`, `SuspendThread` fails instead of parking the thread with a signal, and vectored exception handlers are registered without installing signal handlers | Horizon has no signals (docs/build.md) |
 
-Changes made for the Switch are marked `DemonSoulsNX` in the code.
+Changes made for the Switch are marked `DemonSoulsNX` in the code. Everything else the runtime needs
+from Horizon comes from `src/hos/`, outside these folders.

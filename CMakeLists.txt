@@ -49,6 +49,24 @@ find_package(ZLIB REQUIRED)    # switch-zlib, from portlibs
 target_link_libraries(desnx_platform PUBLIC ZLIB::ZLIB deko3d PRIVATE desnx_shaders)
 
 # ---------------------------------------------------------------------------
+# ps3recomp's runtime, built for Horizon from the vendored sources as they are. src/hos stands
+# in for the POSIX pieces Horizon does not have: shim headers searched first, a header forced
+# into every source, its implementations, and mbedTLS's platform settings (docs/build.md).
+# ---------------------------------------------------------------------------
+option(DESNX_RUNTIME "Build ps3recomp's runtime library" ON)
+if(DESNX_RUNTIME)
+	add_subdirectory(third_party/ps3recomp EXCLUDE_FROM_ALL)
+	target_include_directories(ps3recomp_runtime BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/src/hos/include)
+	# cellPad and cellAudio include <SDL2/SDL.h>: portlibs' include folder itself
+	target_include_directories(ps3recomp_runtime PRIVATE ${DEVKITPRO}/portlibs/switch/include)
+	target_compile_options(ps3recomp_runtime PRIVATE -include ${CMAKE_SOURCE_DIR}/src/hos/hos_compat.h)
+	target_compile_definitions(ps3recomp_runtime PRIVATE
+		"MBEDTLS_USER_CONFIG_FILE=\"${CMAKE_SOURCE_DIR}/src/hos/hos_mbedtls_config.h\"")
+	target_sources(ps3recomp_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src/hos/hos_compat.c)
+	add_custom_target(desnx_runtime ALL DEPENDS ps3recomp_runtime)
+endif()
+
+# ---------------------------------------------------------------------------
 # The NRO. For now a test shell with no game code (docs/status.md).
 # ---------------------------------------------------------------------------
 # nx_guest_fault.s replaces libnx's exception entry, so it is linked as an object: from the
