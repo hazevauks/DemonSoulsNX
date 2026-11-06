@@ -125,12 +125,29 @@ cmake --build build --target demonsouls_game_nro -j 3
 It compiles the 57 chunks, the SPU images and libsre with Soulbrandt's flags (`-O2 -fwrapv
 -fno-strict-aliasing -ffp-contract=off`, without its x86 `-msse4.1`: `ps3emu/ps3_sse.h` gives the same
 operations on ARM), and links them with the host side, the runtime and the platform layer into
-`build/demonsouls_game.nro`. On the laptop above, one chunk alone takes about 6.6 minutes and 1.6 GB.
-With the browser and other big programs closed, three at a time fit in its 12 GB: up to 4.6 GB between
-them, never under 2.4 GB free, no paging (measured over ten minutes). It has two cores with four
-threads, so the third job adds less than a core: about two and a half hours in all, against three
-with two jobs. Four would leave too little memory for the largest chunks (14 MB of C++). Only what
-changes is compiled again: the chunks only when the lift is made anew.
+`build/demonsouls_game.nro`: 166 MB, 156 MB of it ARM code, and 37 MB of zeroed data on top when it
+runs. Only what changes is compiled again: the chunks only when the lift is made anew. A change to
+the port's own code links again in about a minute.
+
+The lifted code builds without debug information (`-g0`), although devkitPro's Release flags carry
+`-g`. The first whole build had it: it took 203 minutes, its objects 2.1 GB and its ELF 1 GB (866 MB of
+debug sections). Most of the time went to one chunk: 039 holds 12 functions of 10,000 to 12,600 lines,
+on which GCC's variable tracking for the debugger took about two hours, the last 50 minutes alone.
+Without it, measured two at a time:
+
+| Chunk | With `-g` | With `-g0` | Object | Peak memory |
+| --- | --- | --- | --- | --- |
+| 000 | 6.6 min (alone) | 7.4 min | 39.9 MB → 7.4 MB | 1.3 GB |
+| 039 | about 2 hours | 14.6 min | 36.0 MB → 6.8 MB | 1.4 GB |
+
+So a whole build should take a little over two hours (estimated from the first build's log). The ELF keeps every function's
+name in its symbol table, which is what a crash report needs; the port's own code and the runtime keep
+their debug information.
+
+On the laptop above, with the browser and other big programs closed, three chunks at a time fit in its
+12 GB: up to 4.6 GB between them with `-g`, never under 2.4 GB free, no paging (measured over ten
+minutes). It has two cores with four threads, so the third job adds less than a core. Four would
+leave too little memory for the largest chunks (14 MB of C++).
 
 `work/` is in `.gitignore`, and `tools/check_repo.py` refuses it. The NRO that comes out holds code
 made from your game: it stays on your PC and your console. `tools/make_sd.py` takes the libsre image

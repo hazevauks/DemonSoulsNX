@@ -179,10 +179,12 @@ if(TARGET desnx_host AND DESNX_PPU_CHUNKS)
 		${DESNX_LIFT_DIR}/recomp ${PS3RECOMP}/include ${PS3RECOMP}/runtime/ppu ${PS3RECOMP}/runtime/spu
 		${PS3RECOMP}/libs/video)
 	# Soulbrandt's flags for the lifted code (its port/CMakeLists.txt), without its x86 SSE4.1:
-	# ps3emu/ps3_sse.h gives the same operations on ARM
+	# ps3emu/ps3_sse.h gives the same operations on ARM. No debug information (-g0 over the -g
+	# devkitPro's Release flags carry): the code is generated, crash reports name its functions from
+	# the symbol table, and GCC's variable tracking takes hours on the longest lifted functions
 	target_compile_options(demonsouls_game PRIVATE
 		$<$<COMPILE_LANGUAGE:C,CXX>:-include ${CMAKE_SOURCE_DIR}/src/hos/hos_compat.h>
-		-O2 -fwrapv -fno-strict-aliasing -ffp-contract=off
+		-O2 -g0 -fwrapv -fno-strict-aliasing -ffp-contract=off
 		-Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-label
 		-Wno-unused-but-set-variable)
 	target_compile_definitions(demonsouls_game PRIVATE _GNU_SOURCE DS_NO_SHADOW_STACK)
