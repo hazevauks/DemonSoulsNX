@@ -109,14 +109,16 @@ static void log_guest_memory(const char *when)
            (unsigned long long)(stats.mapped >> 20), stats.maps, stats.faults, stats.refused);
     if (stats.refused)
         nx_log(" (the first at %#llx, result %#x)", (unsigned long long)stats.refused_at, stats.refused_rc);
-    nx_log("; host stacks: %u threads, %llu MB, %u capped\n", s_threads, s_stack_bytes >> 20, s_capped);
+    nx_log("; host stacks so far: %u, %llu MB, %u capped\n", s_threads, s_stack_bytes >> 20, s_capped);
 }
 
+/* The log stays open: stdout and stderr are its stream, and other threads may still print.
+ * The C library's exit flushes and closes it after this. */
 static void at_exit(void)
 {
     log_guest_memory("at the exit");
     nx_guest_close();
-    nx_log_shutdown();
+    fflush(stdout);
 }
 
 /* Every 10 seconds, while it changes: a game that hangs or crashes never reaches the exit. */

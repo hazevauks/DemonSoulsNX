@@ -12,7 +12,8 @@ extern "C" {
 void nx_log_init(const char *version);
 void nx_log_shutdown(void);
 
-/* The game, which has no text screen: stdout goes where stderr goes, the log or nxlink. */
+/* The game, which has no text screen and many threads: stdout and stderr become the log's own
+ * stream (or nxlink's), for the threads created after this call. */
 void nx_log_capture_stdout(void);
 
 void nx_log(const char *format, ...) __attribute__((format(printf, 1, 2)));

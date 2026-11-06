@@ -99,6 +99,21 @@ timed the sound at larger buffers):
 | The same at 512, 1024 and 2048 frames a buffer | 40,690, **48,091** and 47,866 a second: from 1024 frames (21.3 ms) a buffer the device keeps up, within the measurement's half a percent. Stage 7 opens SDL2 with 1024 frames on the Switch; cellAudio already allows a device buffer larger than its blocks |
 | A tone at 256 frames a buffer, then at 1024 | the first sounds rougher, as the silence between its buffers would make it |
 
+The stage 6 test, the same day: the test NRO with guest memory's new calls, then the game's NRO
+for the first time, on the same console:
+
+| What | Result |
+| --- | --- |
+| The test NRO's guest memory, as the game maps it: 511 MB committed, 64 pieces of 1 MB, 9 faults | 95 ms; 203 µs a piece; 209 µs a fault; 75 mappings, 584 MB, all given back |
+| The game's start: the log, the drives, the checks, guest memory at 0x200000000, the RSX's 256 MB mapped | yes |
+| The boot: `EBOOT.elf`'s two segments, libsre (756 functions, 267 exports), the HLE table and the system calls, the entry dispatched | yes |
+| The game's own threads | 22 PPU threads, the set Soulbrandt's docs/24 lists for a boot that reaches the engine: HighGraphics, HG_Watchdog, the four `Core.Res.*`, Havok, the sound threads, NexusRevolution, DsSaveLoadMan, SLSession |
+| Guest memory after 30 seconds | 467 MB in 61 mappings, 43 faults answered, none refused |
+| Host stacks | 95 set so far (SPURS tasksets end and start again, and their threads with them), 622 MB asked for in all, 33 of them cut from 256 MB to 16 MB; no thread failed to start |
+| The game's files | 24 opened by the PS3's paths: shader bundles, sounds, `other/`, its cache in `/dev_hdd1` (empty at a first start) |
+| Where it stops | about 20 seconds in, a thread waits on SPURS event flag 0x01B93E00, which SPU image 2's job chain sets when HighGraphics starts (Soulbrandt's docs/24); 24 seconds later it was still waiting, and the log ends there. Stage 8 |
+| The log | lines of different threads wrote over each other, with leftover bytes from the SD card in the gaps: stdout, stderr and the log were three streams on one descriptor. They are one stream now, not run yet |
+
 ## Not checked yet
 
 How late the sound is with 1024-frame buffers: two of them in the audio renderer (43 ms) and
@@ -118,11 +133,15 @@ first boot of the game.
 
 How many separate pieces the kernel allows before it runs out of memory blocks: each piece
 mapped on its own stays a block of its own. The game maps what the runtime commits in whole
-ranges, and 1 MB pieces for stray touches; its log counts them.
+ranges, and 1 MB pieces for stray touches: 61 mappings 30 seconds into the first run. Its log
+counts them every 10 seconds.
 
-The game on its guest memory (stage 6): how far the boot gets, how much memory and how many
-mappings the game takes, and how many threads, with what stacks. The first run of the game NRO
-says.
+Whether 16 MB is stack enough for every thread of the game, in a level. None ran short in the
+first run's 45 seconds.
+
+The game's exit. `sys_process_exit` ends the process from whichever thread calls it; libnx's exit
+would go back to hbloader on that thread while the others go on, and guest memory given back
+while they run is a crash. Stage 8, when the game first gets that far.
 
 ## Roadmap
 
@@ -133,9 +152,9 @@ says.
 | 3. Engine dependencies: RSX/libgcm to deko3D, PPU/SPU threads to the Switch's cores | **done** (docs/engine.md), checked on the console |
 | 4. The port's build: ps3recomp's runtime and the lifted game with devkitA64 and CMake | **done** (docs/build.md): the runtime, the host side and the lifted game build and link into the game's NRO, in 134 minutes on a 2-core laptop; it can start once stage 6 gives it guest memory |
 | 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | **done**: the libraries are declared and checked, the game links with all of them; on the console SDL2 and deko3D work together, every button reaches SDL2, and its sound keeps up from 1024 frames a buffer (cellAudio's 256 play at half rate) |
-| 6. POSIX layer, alignment, guest memory on the Switch's heap | **in progress**: the game's start, guest memory under the runtime's commits and faults, host stacks; its NRO waits for a console test |
+| 6. POSIX layer, alignment, guest memory on the Switch's heap | **done**: the game's NRO starts, its boot runs on guest memory (467 MB, 61 mappings, nothing refused) and creates the game's 22 PPU threads on capped host stacks |
 | 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | to do: SDL2's sound with 1024 frames a buffer, cellPad reporting only the connected controllers |
-| 8. First boot of the game, with a fallback renderer | to do |
+| 8. First boot of the game, with a fallback renderer | to do: the first run waits on HighGraphics' SPURS event flag about 20 seconds in |
 | 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | started: the log exists |
 | 10. Crash triage: alignment faults, missing system calls, null pointers | to do |
 | 11. Asset loading: archives, materials, shaders, streaming | to do |

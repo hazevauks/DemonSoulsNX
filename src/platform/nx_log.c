@@ -47,11 +47,21 @@ void nx_log_init(const char *version)
            nxlink_fd >= 0 ? "on" : "off");
 }
 
+/* One stream for all of it, so that its lock keeps lines from different threads apart. The
+ * first game run had stdout and stderr as streams of their own on the log's descriptor: each
+ * write goes where the descriptor's offset was when it began, so two threads writing at once
+ * wrote over each other and moved the offset past a hole, and the SD card filled the holes with
+ * whatever its sectors held before. Threads created from now on take these streams with them. */
 void nx_log_capture_stdout(void)
 {
     fflush(stdout);
-    dup2(STDERR_FILENO, STDOUT_FILENO);
-    setvbuf(stdout, NULL, _IONBF, 0);
+    fflush(stderr);
+    if (nxlink_fd < 0 && log_file) {
+        stdout = log_file;
+        stderr = log_file;
+    } else {
+        stdout = stderr;    /* nxlink's socket: the log file is nx_log's alone */
+    }
 }
 
 void nx_log_shutdown(void)
