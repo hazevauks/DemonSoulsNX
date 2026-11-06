@@ -119,7 +119,7 @@ The counts match Soulbrandt's (94,017 PPU functions, 756 in libsre, the same TOC
 With a lift in `work/recomp`, CMake defines the game's target. It is never part of an ordinary build:
 
 ```bash
-cmake --build build --target demonsouls_game_nro -j 3
+cmake --build build --target demonsouls_game_nro -j 2
 ```
 
 It compiles the 57 chunks, the SPU images and libsre with Soulbrandt's flags (`-O2 -fwrapv
@@ -140,14 +140,19 @@ Without it, measured two at a time:
 | 000 | 6.6 min (alone) | 7.4 min | 39.9 MB → 7.4 MB | 1.3 GB |
 | 039 | about 2 hours | 14.6 min | 36.0 MB → 6.8 MB | 1.4 GB |
 
-So a whole build should take a little over two hours (estimated from the first build's log). The ELF keeps every function's
-name in its symbol table, which is what a crash report needs; the port's own code and the runtime keep
-their debug information.
+The whole build without it took 134 minutes with two jobs, against 203 with three: objects 355 MB, the
+ELF 188 MB. The code is the same (`.text` is 156,235,352 bytes in both, and so is the NRO), and so are
+the compiler's 2,671 warnings: 2,668 from ps3recomp's `runtime/spu/spu_helpers.h`, inlined into the
+lifted SPU code, where helpers fill a 128-bit value one lane at a time and GCC takes the whole value
+for uninitialized. The ELF keeps every function's name in its symbol table, which is what a crash report needs;
+the port's own code and the runtime keep their debug information.
 
 On the laptop above, with the browser and other big programs closed, three chunks at a time fit in its
 12 GB: up to 4.6 GB between them with `-g`, never under 2.4 GB free, no paging (measured over ten
-minutes). It has two cores with four threads, so the third job adds less than a core. Four would
-leave too little memory for the largest chunks (14 MB of C++).
+minutes). It has two cores with four threads, so the third job adds less than a core. But Windows
+Update can take memory of its own: during the second build its service held 7 GB, free memory fell to
+0.2 GB with three jobs and committed memory reached 18.0 of 19.4 GB, so that build ran with two. Two is
+the safe choice; four would leave too little memory for the largest chunks (14 MB of C++).
 
 `work/` is in `.gitignore`, and `tools/check_repo.py` refuses it. The NRO that comes out holds code
 made from your game: it stays on your PC and your console. `tools/make_sd.py` takes the libsre image
