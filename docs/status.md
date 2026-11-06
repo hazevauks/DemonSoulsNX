@@ -128,6 +128,15 @@ The stage 7 tests, the same day, two runs of the game's NRO in hand (the Joy-Con
 | Where it stops | the same wait on SPURS event flag 0x01B93E00, sooner: under 10 seconds in, where the first run got about 20 |
 | The log | the first run had gaps again: the runtime makes stdout unbuffered as the PPU starts, and newlib writes to an unbuffered stream outside its lock. With the log's stream kept line-buffered, the second run's 1,259 lines have none |
 
+The stage 8 runs, the same day, after the job chain fix and with the SPURS trace:
+
+| What | Result |
+| --- | --- |
+| A run or kick of a job chain while it was being walked | none: that was not the wait's cause |
+| The texture chain, cycle after cycle | create, run, walk: the copy job (EBOOT 0x0177B480), then the notifier (0x0177B600), whose SPU write sets bit 0x0002 of flag 0x01B93E00; HighGraphics wakes, shuts the chain down, joins it, clears the flag, creates and runs it again: about one cycle every 1 to 5 ms |
+| The last cycle | created and run (walk 111), but no walk: the chain's state reads not running, which is how the runtime's CreateThread failing leaves it. HighGraphics then waits on the flag for good |
+| Why the thread could not be made | libnx's pthreads cannot be detached: newlib's pthread_create keeps no detach state, and its pthread_detach fails, as libnx leaves out its hook. A thread no one joins keeps its kernel handle and its stack. The runtime's CreateThread makes detached threads and joins none, one for each walk of a chain among them |
+
 ## Not checked yet
 
 How late the sound is with 1024-frame buffers: two of them in the audio renderer (43 ms) and
@@ -173,7 +182,7 @@ while they run is a crash. Stage 8, when the game first gets that far.
 | 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | **done**: the libraries are declared and checked, the game links with all of them; on the console SDL2 and deko3D work together, every button reaches SDL2, and its sound keeps up from 1024 frames a buffer (cellAudio's 256 play at half rate) |
 | 6. POSIX layer, alignment, guest memory on the Switch's heap | **done**: the game's NRO starts, its boot runs on guest memory (467 MB, 61 mappings, nothing refused) and creates the game's 22 PPU threads on capped host stacks |
 | 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | **done**: the game's mixer runs at 48,000 frames a second on SDL2 with 1024-frame buffers; cellPad gets only the slots with a controller, and the buttons reach the game in the PS3's positions. Checked in handheld mode; a Pro Controller and detached Joy-Cons take the same way and have not been on the console |
-| 8. First boot of the game, with a fallback renderer | **in progress**: the wait on HighGraphics' SPURS event flag, at the same point of the log in each run. The game uploads its textures through one job chain, run again as soon as its last job sets the flag. A run that came while the chain was still being walked was dropped; it now walks the chain again, but that never happened in the run after, which stopped the same way. The runtime now keeps its last SPURS events and prints the chains' and the flag's when a wait blocks a second |
+| 8. First boot of the game, with a fallback renderer | **in progress**: the wait on HighGraphics' SPURS event flag. The SPURS trace showed its cause: the texture chain's last run never started a walk, as its thread could not be created. libnx has no detached threads, so every thread the runtime made and never joined kept its handle and its stack; about a hundred threads in, no more could be made. Detached threads are now joined, and given back, once they end; not run yet |
 | 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | started: the log exists |
 | 10. Crash triage: alignment faults, missing system calls, null pointers | to do |
 | 11. Asset loading: archives, materials, shaders, streaming | to do |

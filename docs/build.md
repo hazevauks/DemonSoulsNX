@@ -166,6 +166,16 @@ The buttons are by position, as cellPad maps them and as the PS3's are: B is Cro
 Y Square, X Triangle, L and R are L1 and R1, ZL and ZR are L2 and R2, minus and plus are Select and
 Start. The runtime's `PAD_MAP` could swap them.
 
+libnx's threads cannot be detached. newlib's `pthread_create` keeps only the stack's address and
+size from its attributes, so every thread is joinable, and `pthread_detach` fails with ENOSYS, as
+libnx leaves out the `__syscall_thread_detach` it calls. A thread gives back its kernel handle, its
+stack and its control block only when another thread joins it. The runtime's `CreateThread` makes
+every thread detached and joins none, and SPURS starts one for each walk of a job chain, so the
+game's boot ran out of threads about a hundred in. `src/platform/nx_game_threads.c` puts a thread
+created detached (`--wrap=pthread_create`) or detached later (its own `__syscall_thread_detach`)
+on a list, and a reaper thread joins each one, every 100 ms, once it has ended. The log counts
+them every 10 seconds (`threads:`).
+
 None of this needs a change to a vendored file, and all of it is link options: nothing compiles
 again.
 

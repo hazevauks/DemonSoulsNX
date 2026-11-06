@@ -30,6 +30,7 @@
 #include "../hos/hos_guest.h"
 #include "nx_data.h"
 #include "nx_game_sdl.h"
+#include "nx_game_threads.h"
 #include "nx_guest.h"
 #include "nx_log.h"
 #include "nx_paths.h"
@@ -143,9 +144,18 @@ static void *watch_thread(void *arg)
     (void)arg;
     NxGuestStats last = {0};
     unsigned last_threads = 0;
+    NxThreadStats last_detached = {0};
     for (unsigned seconds = 10;; seconds += 10) {
         svcSleepThread(10ull * 1000 * 1000 * 1000);
         nx_game_sdl_report();
+        NxThreadStats detached;
+        nx_game_threads_stats(&detached);
+        if (detached.freed != last_detached.freed || detached.detached != last_detached.detached ||
+            detached.lost != last_detached.lost)
+            nx_log("threads: %u detached ones ended and given back, %u not ended yet (at most %u at once)%s\n",
+                   detached.freed, detached.detached, detached.peak,
+                   detached.lost ? ", and some the list had no room for" : "");
+        last_detached = detached;
         NxGuestStats now;
         nx_guest_stats(&now);
         if (!now.window)

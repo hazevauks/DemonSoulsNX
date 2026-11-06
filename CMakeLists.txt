@@ -123,6 +123,7 @@ if(DESNX_RUNTIME AND DESNX_HOST)
 		${CMAKE_SOURCE_DIR}/src/platform/nx_port_glue.c
 		${CMAKE_SOURCE_DIR}/src/platform/nx_game_main.c   # the Switch's start, before the boot's main
 		${CMAKE_SOURCE_DIR}/src/platform/nx_game_sdl.c    # the game's sound and controls through SDL2
+		${CMAKE_SOURCE_DIR}/src/platform/nx_game_threads.c   # detached threads, which libnx lacks
 	)
 	set_property(SOURCE ${CMAKE_SOURCE_DIR}/src/platform/nx_game_main.c
 		APPEND PROPERTY COMPILE_DEFINITIONS DESNX_VERSION="${PROJECT_VERSION}")
@@ -210,7 +211,7 @@ if(TARGET desnx_host AND DESNX_PPU_CHUNKS)
 	# the boot's main; and host stacks are capped at 16 MB, as libnx takes a whole stack from the heap.
 	# nx_game_sdl.c: cellAudio's device buffer and cellPad's controllers, as the Switch's SDL2 needs
 	target_link_options(demonsouls_game PRIVATE -Wl,-Map=${CMAKE_BINARY_DIR}/demonsouls_game.map -Wl,--gc-sections
-		-Wl,--wrap=main -Wl,--wrap=pthread_attr_setstacksize -Wl,--wrap=setvbuf
+		-Wl,--wrap=main -Wl,--wrap=pthread_attr_setstacksize -Wl,--wrap=setvbuf -Wl,--wrap=pthread_create
 		-Wl,--wrap=SDL_OpenAudioDevice -Wl,--wrap=SDL_QueueAudio
 		-Wl,--wrap=SDL_IsGameController -Wl,--wrap=SDL_GameControllerOpen -Wl,--wrap=SDL_GameControllerGetAttached
 		-Wl,--wrap=SDL_GameControllerGetButton -Wl,--wrap=SDL_GameControllerGetAxis)
