@@ -140,6 +140,17 @@ The stage 8 runs, the same day, after the job chain fix and with the SPURS trace
 | How far the boot got | past HighGraphics: the in-game load list (`other/ingamestay.loadlist`), the loading screens (`menu/nowloading*.drb`), `other/lensflare.tpf`, the character parts (`parts/*.partsbnd.dcx`), `facegen/facegen.fgbnd`, and indexed draws, about 35 seconds in. Then the log falls nearly silent, while the game goes on making a thread now and then: perhaps waiting for the title screen's Start, which nothing on the screen shows yet |
 | The sound | stopped 15 seconds in: the mixer's queue stayed at 1,792 frames, so the device took no more. Most likely SDL2's audio thread, at the same priority as the game's thousand threads, went without the CPU until its voice ran dry, and switch-sdl2's driver waits on a stopped voice for good. Threads asking SDL2 for high priority now get 40, above the game's 59 |
 
+The next run, 150 seconds, with Start pressed at about 40 seconds and Cross after:
+
+| What | Result |
+| --- | --- |
+| The game's frames, 10 seconds at a time | 63, 97, then 108 to 110 to the end: the game's loop runs, at about 11 frames a second on the null renderer |
+| The sound | 47,794 to 48,156 frames a second for all 150 seconds, the device playing: SDL2's audio thread at priority 40 holds |
+| Start (plus) | reached the game at about 38 seconds; the game then loaded the player character (`chr/c0000`, its animations and scripts), `menu/menu.tpf.dcx` and the face generator |
+| Cross (B) | reached the game at about 55 seconds: it started its trophy manager (38 trophies, from the disc's TROPHY.TRP), found no save, made one (`BLUS30443DEMONSS005`: `USER.DAT` and its copies, the icons) and played a menu sound (the loudest sample 0.188) |
+| Then | the title screen's movies: `movie/ds_advertise.pam`, then `movie/ds_title.pam`, each ending at once, as the runtime plays movies through FFmpeg, which this build has not got |
+| Guest memory and threads | 469 MB in 63 mappings, 44 faults, none refused; 2,004 detached threads given back, never more than 93 at once |
+
 ## Not checked yet
 
 How late the sound is with 1024-frame buffers: two of them in the audio renderer (43 ms) and
@@ -172,7 +183,13 @@ first run's 45 seconds.
 
 The game's exit. `sys_process_exit` ends the process from whichever thread calls it; libnx's exit
 would go back to hbloader on that thread while the others go on, and guest memory given back
-while they run is a crash. Stage 8, when the game first gets that far.
+while they run is a crash. So far every run has been closed from the HOME menu.
+
+The game's movies: the runtime plays them through FFmpeg, loaded at run time on a PC. The Switch
+has no loading at run time, and devkitPro's switch-ffmpeg 7.1 would have to be linked in.
+
+The game's speed: about 11 frames a second at the title screen, on the null renderer, where the
+PS3 gives 30. Stages 16 and 17.
 
 ## Roadmap
 
@@ -185,7 +202,7 @@ while they run is a crash. Stage 8, when the game first gets that far.
 | 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | **done**: the libraries are declared and checked, the game links with all of them; on the console SDL2 and deko3D work together, every button reaches SDL2, and its sound keeps up from 1024 frames a buffer (cellAudio's 256 play at half rate) |
 | 6. POSIX layer, alignment, guest memory on the Switch's heap | **done**: the game's NRO starts, its boot runs on guest memory (467 MB, 61 mappings, nothing refused) and creates the game's 22 PPU threads on capped host stacks |
 | 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | **done**: the game's mixer runs at 48,000 frames a second on SDL2 with 1024-frame buffers; cellPad gets only the slots with a controller, and the buttons reach the game in the PS3's positions. Checked in handheld mode; a Pro Controller and detached Joy-Cons take the same way and have not been on the console |
-| 8. First boot of the game, with a fallback renderer | **in progress**: past HighGraphics' SPURS wait (libnx had no detached threads: they are now given back), the boot loads the game's assets up to `facegen/facegen.fgbnd`, 35 seconds in. Next: whether it then draws frames (the log now counts them) and what it waits for; the sound stopped at 15 seconds |
+| 8. First boot of the game, with a fallback renderer | **done**: on the null renderer the game boots to its title screen and runs its loop at about 11 frames a second, with its sound; Start and Cross reach it, it makes its save and plays its menu sounds. Nothing is drawn on the screen until the deko3D renderer (stage 12), and the movies need FFmpeg |
 | 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | started: the log exists |
 | 10. Crash triage: alignment faults, missing system calls, null pointers | to do |
 | 11. Asset loading: archives, materials, shaders, streaming | to do |

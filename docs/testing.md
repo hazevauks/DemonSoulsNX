@@ -83,7 +83,13 @@ files decrypted on the PC are on the card. It reads about 80 MB and takes a few 
 `demonsouls_game.nro` is the game itself; in the homebrew menu it is the "Demon's Souls" whose
 version reads "0.0.1 game". Start it the same way, with title takeover. If something it needs is
 missing (the game's folder, `EBOOT.elf`, the libsre image, enough memory), a text screen says what,
-and + exits. Otherwise the screen stays black: the game draws nothing on the Switch yet (stage 8).
+and + exits. Otherwise the screen stays black: the game draws nothing on the Switch until the
+deko3D renderer (stage 12), but it runs. About 40 seconds in it is at its title screen: plus is
+Start, then B (the PS3's Cross) goes on, makes the game's save the first time and plays a menu
+sound. Close it from the HOME menu.
+
+Every 10 seconds the log gives `frames:` (the game's frames), `sound:`, `threads:` (detached threads
+given back) and `guest memory`.
 
 Stage 6 is the guest memory under the game. The log's `guest memory` lines give the window and
 what is mapped at the start, then, every 10 seconds while it changes, how much the game has
