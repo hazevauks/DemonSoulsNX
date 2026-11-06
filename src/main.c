@@ -47,13 +47,17 @@ static void show(const NxSystem *system, const NxGuestProbe *guest, const NxGpuP
     else
         printf("GPU:          failed at %s\n", gpu->failed);
     printf("Cores:        %u for the game, a wake takes %u us\n", cpu->cores, (cpu->wake_cross_ns + 500) / 1000);
-    if (sdl->failed)
+    if (sdl->failed) {
         printf("SDL2:         %s failed at %s, see the log\n\n", sdl->version, sdl->failed);
-    else
-        printf("Controls:     SDL2 %s, %d controller%s%s%s\n"
-               "Sound:        %d Hz, %d channels, played at %u frames a second\n\n",
-               sdl->version, sdl->controllers, sdl->controllers == 1 ? "" : "s", sdl->controller[0] ? ": " : "",
-               sdl->controller, sdl->audio_freq, sdl->audio_channels, sdl->audio_rate);
+    } else {
+        printf("Controls:     SDL2 %s, %d controller%s%s%s\n", sdl->version, sdl->controllers,
+               sdl->controllers == 1 ? "" : "s", sdl->controller[0] ? ": " : "", sdl->controller);
+        printf("Sound:        %d Hz, %d channels; frames played a second, by buffer size:\n             ",
+               sdl->audio_freq, sdl->audio_channels);
+        for (int i = 0; i < NX_SDL_AUDIO_SIZES; i++)
+            printf(" %d: %u ", sdl->audio_sizes[i], sdl->audio_rates[i]);
+        printf("\n\n");
+    }
 
     if (!data->found)
         printf("Game files:   not found. Copy the game's folder to\n              " NX_GAME_DIR "/\n");
@@ -93,7 +97,8 @@ int main(int argc, char **argv)
     padInitializeDefault(&pad);
 
     /* SDL2's controllers and sound before deko3D, so deko3D starts with both running, as in
-     * the game; SDL2's tone plays just before the triangle */
+     * the game; SDL2's two tones play, after about two seconds of silence, just before the
+     * triangle */
     NxSdlProbe sdl;
     nx_sdl_probe(&sdl);
 

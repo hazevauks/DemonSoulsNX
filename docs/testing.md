@@ -60,12 +60,16 @@ Stage 3 starts with two seconds of a triangle on a dark screen: that is deko3D, 
 screen. Its `gpu:` lines give the frames and their timing, and the `cpu:` lines the cores, how
 fast threads wake each other, and how accurate a short sleep is.
 
-Stage 5 starts SDL2 first, the way the runtime's pad and sound modules do: a short, quiet tone
-plays just before the triangle. The screen's `Controls:` and `Sound:` lines give the controller
-SDL2 sees and the rate the sound device played at (48,000 frames a second is right), and the
-`Buttons:` line at the bottom shows, live, what SDL2 reads from the controller. Press every button
-once, the sticks and ZL and ZR too: the log's `sdl:` lines note each button by SDL2's name the
-first time, which is how the console's buttons reach the game's pad module (stage 7 maps them).
+Stage 5 starts SDL2 first, the way the runtime's pad and sound modules do. The sound device is
+opened four times, with buffers of 256, 512, 1024 and 2048 frames, and timed for half a second
+each in silence; then two short, quiet tones play just before the triangle, the first with 256
+frames a buffer (what the sound module asks for), the second with the smallest size that kept up.
+If the first sounds rougher than the second, say so. The screen's `Controls:` line gives the
+controller SDL2 sees, and `Sound:` the frames each buffer size played a second (48,000 is right).
+The `Buttons:` line at the bottom shows, live, what SDL2 reads from the controller. Press every
+button once, the sticks and ZL and ZR too: the log's `sdl:` lines note each button by SDL2's name
+the first time, which is how the console's buttons reach the game's pad module (stage 7 maps
+them).
 
 Stage 2 adds the `files:` lines: the game's first files opened by the PS3's paths (one in the
 mixed case the game uses), three DCX files inflated, the SD card's speed for a long read, a seek

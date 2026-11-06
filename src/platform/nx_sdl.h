@@ -11,23 +11,27 @@
 extern "C" {
 #endif
 
+#define NX_SDL_AUDIO_SIZES 4
+
 typedef struct {
     char version[16];           /* the SDL2 linked in */
     uint32_t init_us;           /* the game controller and audio subsystems, started as cellPad and cellAudio do */
     int controllers;            /* game controllers SDL sees at the start */
     char controller[64];        /* the first one's name */
     const char *audio_driver;
-    int audio_freq;             /* what the device gave for cellAudio's request: 48 kHz, float, stereo, 256 frames */
+    int audio_freq;             /* what the device gave for cellAudio's request: 48 kHz, float, stereo */
     int audio_channels;
-    int audio_samples;
     bool audio_float;
-    uint32_t audio_rate;        /* frames a second the device took from the queue, measured */
+    int audio_sizes[NX_SDL_AUDIO_SIZES];        /* frames a buffer: cellAudio's 256 first, then larger */
+    uint32_t audio_rates[NX_SDL_AUDIO_SIZES];   /* frames a second the device took from the queue with each */
+    int audio_full;             /* the smallest size that played 48,000 frames a second, or 0 */
     const char *failed;         /* the step that failed, or NULL */
 } NxSdlProbe;
 
 /* Stage 5: starts SDL2's game controllers and audio the way the runtime does, opens the audio
- * device with cellAudio's request, and plays a short tone through its queue while timing it.
- * The game controllers stay open for nx_sdl_pad_line. */
+ * device with cellAudio's request at four buffer sizes and times how fast each takes its queue,
+ * then plays a short tone at 256 frames and one at the smallest size that keeps up. The game
+ * controllers stay open for nx_sdl_pad_line. */
 void nx_sdl_probe(NxSdlProbe *out);
 
 /* The first controller's buttons and sticks, as SDL names them, for the screen. Logs each

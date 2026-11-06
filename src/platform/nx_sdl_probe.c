@@ -4,8 +4,15 @@
  * through an SDL2 audio queue (libs/input/cellPad.c, libs/audio/cellAudio.c): on the Switch,
  * switch-sdl2's own drivers, over libnx's pad and audio services. SDL2's video is never started,
  * as deko3D owns the window. This starts both subsystems the way those modules do, opens the
- * audio device with cellAudio's request, and times how fast the device takes a tone from the
- * queue: the game's audio clock runs on that rate.
+ * audio device with cellAudio's request, and times how fast the device takes its queue: cellAudio
+ * paces the game's audio clock on that rate.
+ *
+ * The first console test played cellAudio's 256-frame buffers at 25,600 frames a second, not
+ * 48,000. switch-sdl2's driver (src/audio/switch) gives the audio renderer two buffers and waits
+ * for each to start playing before it takes the next from the queue; a 5.3 ms buffer is shorter
+ * than that round trip, so the voice runs dry between buffers. So the rate is measured at four
+ * buffer sizes, and a tone played at 256 frames and at the smallest size that keeps up, for the
+ * ear to compare.
  */
 
 #include <math.h>
@@ -23,13 +30,19 @@
 
 #define AUDIO_FREQ      48000       /* cellAudio's CELL_AUDIO_SAMPLE_RATE */
 #define AUDIO_BLOCK     256         /* and CELL_AUDIO_BLOCK_SAMPLES */
-#define TONE_MS         600
+#define AUDIO_FULL_RATE 47500       /* within 1% of 48 kHz */
+#define FRAME_BYTES     (2 * sizeof(float))
+#define QUEUE_MS        1000        /* silence queued for a measurement: more than it can take */
+#define START_MS        100         /* the device fills its two buffers first */
+#define MEASURE_MS      500
+#define TONE_MS         400
+#define TONE_GAP_MS     300
 #define TONE_HZ         440.0f
 #define TONE_LEVEL      0.08f
 #define FADE_FRAMES     480         /* 10 ms in and out, so the tone does not click */
-#define START_MS        50
-#define MEASURE_MS      400
 #define TRIGGER_DOWN    16000       /* ZL and ZR are digital: SDL gives 0 or 32767 */
+
+static const int k_audio_sizes[NX_SDL_AUDIO_SIZES] = {AUDIO_BLOCK, 512, 1024, 2048};
 
 static SDL_GameController *s_pad;
 static uint32_t s_logged;           /* buttons, and the two triggers above them, already logged */
@@ -58,46 +71,119 @@ static void open_first_pad(void)
     }
 }
 
-static const char *play_tone(SDL_AudioDeviceID device, NxSdlProbe *out)
+static SDL_AudioDeviceID open_audio(int samples, SDL_AudioSpec *have)
 {
-    const int frames = AUDIO_FREQ * TONE_MS / 1000;
-    const uint32_t frame_bytes = 2 * sizeof(float);
-    float *tone = malloc((size_t)frames * frame_bytes);
-    if (!tone)
-        return "memory for the tone";
-    for (int i = 0; i < frames; i++) {
-        float level = TONE_LEVEL;
-        if (i < FADE_FRAMES)
-            level *= (float)i / FADE_FRAMES;
-        else if (frames - i < FADE_FRAMES)
-            level *= (float)(frames - i) / FADE_FRAMES;
-        float sample = level * sinf(2.0f * (float)M_PI * TONE_HZ * (float)i / AUDIO_FREQ);
-        tone[2 * i] = sample;
-        tone[2 * i + 1] = sample;
-    }
-    int queued = SDL_QueueAudio(device, tone, (uint32_t)frames * frame_bytes);
-    free(tone);
-    if (queued < 0) {
-        nx_log("sdl: queueing the tone failed: %s\n", SDL_GetError());
-        return "SDL audio queue";
-    }
+    SDL_AudioSpec want;
+    memset(&want, 0, sizeof(want));
+    want.freq = AUDIO_FREQ;
+    want.format = AUDIO_F32SYS;
+    want.channels = 2;
+    want.samples = (uint16_t)samples;
+    SDL_AudioDeviceID device = SDL_OpenAudioDevice(NULL, 0, &want, have, 0);
+    if (!device)
+        nx_log("sdl: opening the audio device for %d frames a buffer failed: %s\n", samples, SDL_GetError());
+    return device;
+}
+
+/* Frames a second the device takes from its queue, from the first to the last time the queue
+ * shrinks within the measurement, so the size of each take does not round the figure. */
+static uint32_t measure_rate(SDL_AudioDeviceID device)
+{
+    static const float silence[AUDIO_BLOCK * 2];
+    for (int i = 0; i < AUDIO_FREQ * QUEUE_MS / 1000 / AUDIO_BLOCK; i++)
+        if (SDL_QueueAudio(device, silence, sizeof(silence)) < 0)
+            return 0;
 
     SDL_PauseAudioDevice(device, 0);
     sleep_ms(START_MS);
-    uint32_t before = SDL_GetQueuedAudioSize(device);
-    uint64_t start = now_us();
-    sleep_ms(MEASURE_MS);
-    uint32_t after = SDL_GetQueuedAudioSize(device);
-    uint64_t took = now_us() - start;
-    if (before > after && took > 0)
-        out->audio_rate = (uint32_t)((uint64_t)(before - after) / frame_bytes * 1000000 / took);
-    nx_log("sdl: the device took %u bytes of the tone in %lu us: %u frames a second\n", before - after,
-           (unsigned long)took, out->audio_rate);
+    uint32_t last = SDL_GetQueuedAudioSize(device), first_left = 0, last_left = 0;
+    uint64_t first_at = 0, last_at = 0, end = now_us() + MEASURE_MS * 1000;
+    while (now_us() < end) {
+        sleep_ms(1);
+        uint32_t left = SDL_GetQueuedAudioSize(device);
+        if (left < last) {
+            uint64_t at = now_us();
+            if (!first_at) {
+                first_at = at;
+                first_left = left;
+            }
+            last_at = at;
+            last_left = left;
+        }
+        last = left;
+    }
+    if (last_at <= first_at)
+        return 0;
+    return (uint32_t)((uint64_t)(first_left - last_left) / FRAME_BYTES * 1000000 / (last_at - first_at));
+}
 
-    for (int waited = 0; SDL_GetQueuedAudioSize(device) > 0 && waited < 1000; waited += 10)
-        sleep_ms(10);
-    sleep_ms(START_MS);             /* what is left in the device's own buffer */
-    return out->audio_rate ? NULL : "SDL audio playback";
+static void play_tone(int samples)
+{
+    SDL_AudioSpec have;
+    SDL_AudioDeviceID device = open_audio(samples, &have);
+    if (!device)
+        return;
+    const int frames = AUDIO_FREQ * TONE_MS / 1000;
+    float *tone = malloc((size_t)frames * FRAME_BYTES);
+    if (tone) {
+        for (int i = 0; i < frames; i++) {
+            float level = TONE_LEVEL;
+            if (i < FADE_FRAMES)
+                level *= (float)i / FADE_FRAMES;
+            else if (frames - i < FADE_FRAMES)
+                level *= (float)(frames - i) / FADE_FRAMES;
+            float sample = level * sinf(2.0f * (float)M_PI * TONE_HZ * (float)i / AUDIO_FREQ);
+            tone[2 * i] = sample;
+            tone[2 * i + 1] = sample;
+        }
+        SDL_QueueAudio(device, tone, (uint32_t)(frames * FRAME_BYTES));
+        free(tone);
+        SDL_PauseAudioDevice(device, 0);
+        for (int waited = 0; SDL_GetQueuedAudioSize(device) > 0 && waited < 3 * TONE_MS; waited += 10)
+            sleep_ms(10);
+        sleep_ms(2 * 1000 * samples / AUDIO_FREQ + 20);  /* what is left in the device's two buffers */
+    }
+    SDL_CloseAudioDevice(device);
+}
+
+static void probe_audio(NxSdlProbe *out)
+{
+    out->audio_driver = SDL_GetCurrentAudioDriver();
+    for (int i = 0; i < NX_SDL_AUDIO_SIZES; i++) {
+        SDL_AudioSpec have;
+        SDL_AudioDeviceID device = open_audio(k_audio_sizes[i], &have);
+        if (!device) {
+            out->failed = "SDL audio device";
+            return;
+        }
+        if (i == 0) {
+            out->audio_freq = have.freq;
+            out->audio_channels = have.channels;
+            out->audio_float = have.format == AUDIO_F32SYS;
+            nx_log("sdl: audio driver %s: %d Hz, %d channels, format 0x%04x\n",
+                   out->audio_driver ? out->audio_driver : "?", have.freq, have.channels, have.format);
+        }
+        out->audio_sizes[i] = have.samples;
+        out->audio_rates[i] = measure_rate(device);
+        SDL_CloseAudioDevice(device);
+        nx_log("sdl: %d frames a buffer: the device took %u frames a second\n", have.samples, out->audio_rates[i]);
+        if (!out->audio_full && out->audio_rates[i] >= AUDIO_FULL_RATE)
+            out->audio_full = have.samples;
+    }
+    if (!out->audio_rates[0]) {
+        out->failed = "SDL audio playback";
+        return;
+    }
+
+    int other = out->audio_full && out->audio_full != AUDIO_BLOCK ? out->audio_full : k_audio_sizes[NX_SDL_AUDIO_SIZES - 1];
+    if (out->audio_full)
+        nx_log("sdl: 48000 frames a second from %d frames a buffer; cellAudio asks for %d\n", out->audio_full, AUDIO_BLOCK);
+    else
+        nx_log("sdl: no buffer size reached 48000 frames a second\n");
+    nx_log("sdl: a tone at %d frames a buffer, then one at %d\n", AUDIO_BLOCK, other);
+    play_tone(AUDIO_BLOCK);
+    sleep_ms(TONE_GAP_MS);
+    play_tone(other);
 }
 
 void nx_sdl_probe(NxSdlProbe *out)
@@ -133,28 +219,7 @@ void nx_sdl_probe(NxSdlProbe *out)
         snprintf(out->controller, sizeof(out->controller), "%s", name ? name : "?");
     }
 
-    out->audio_driver = SDL_GetCurrentAudioDriver();
-    SDL_AudioSpec want, have;
-    memset(&want, 0, sizeof(want));
-    want.freq = AUDIO_FREQ;
-    want.format = AUDIO_F32SYS;
-    want.channels = 2;
-    want.samples = AUDIO_BLOCK;
-    SDL_AudioDeviceID device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-    if (!device) {
-        nx_log("sdl: opening the audio device failed: %s\n", SDL_GetError());
-        out->failed = "SDL audio device";
-        return;
-    }
-    out->audio_freq = have.freq;
-    out->audio_channels = have.channels;
-    out->audio_samples = have.samples;
-    out->audio_float = have.format == AUDIO_F32SYS;
-    nx_log("sdl: audio driver %s: %d Hz, %d channels, format 0x%04x, %d frames at a time\n",
-           out->audio_driver ? out->audio_driver : "?", have.freq, have.channels, have.format, have.samples);
-
-    out->failed = play_tone(device, out);
-    SDL_CloseAudioDevice(device);
+    probe_audio(out);
 }
 
 static void append(char *out, size_t size, size_t *used, const char *format, ...)

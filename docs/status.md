@@ -82,7 +82,28 @@ The stage 3 test, the same day, on the same console:
 | A yield | 0.34 µs |
 | zlib inflating the game's DCX blocks on one core | 107 MB/s |
 
+The stage 5 test, 2026-11-06, on the same console, with a Switch controller:
+
+| What | Result |
+| --- | --- |
+| SDL2 2.28.5 and zlib 1.3.1 in the NRO, the versions it was built against | yes |
+| SDL2's game controllers and sound, started as cellPad and cellAudio start them | 0.8 ms |
+| deko3D after SDL2: the triangle | 120 frames at 16.4 ms, as before |
+| The controllers SDL2 lists | 8: switch-sdl2 lists one for each of the console's eight controller slots, connected or not; the first is a "Switch Controller" |
+| Every button reaches SDL2's game controller API | all 15 pressed: A, B, X, Y, L, R, ZL and ZR (as triggers), the d-pad, both sticks pressed in, minus; plus exits the test, and HOME is the system's |
+| Which button is SDL2's `a` | the Switch's **B**, the bottom one: switch-sdl2 maps by position (its mapping string is `a:b1,b:b0,x:b3,y:b2`, with button 0 the Switch's A), so cellPad's Cross is the bottom button, where the PS3 has it |
+| The sound device, opened as cellAudio opens it: 48 kHz, float, stereo, 256 frames a buffer | opens; the driver turns the float into 16-bit for the audio renderer |
+| Frames a second the device takes from the queue at 256 frames a buffer | **25,600, not 48,000**: one buffer every 10 ms, so the rest of each 10 ms is silence. switch-sdl2's driver keeps two buffers in the audio renderer and waits for each to start before it takes the next; a 5.3 ms buffer is shorter than that wait. cellAudio paces the game's audio clock on this rate, so it would run at about half speed |
+
 ## Not checked yet
+
+The sound at larger buffers. The test NRO now times the device with 256, 512, 1024 and 2048
+frames a buffer, and plays a tone at 256 and one at the smallest size that keeps up. If one keeps
+up, stage 7 opens SDL2 with it (cellAudio already allows a device buffer larger than its blocks);
+if none does, cellAudio gets its own audio renderer voice with more buffers in the queue.
+
+Which controller slots are connected: SDL2 lists all eight, and stage 7 has cellPad report only
+the ones in use.
 
 The game's cache on the SD card. The game copies files it loads into `/dev_hdd1` and reads the
 copies on later loads (Soulbrandt's docs/101: 173 copies during the load into 1-1). On the PS3
@@ -104,7 +125,7 @@ leaves 64 KB pieces for stray touches; it will log how many pieces it maps.
 | 2. Asset packaging: paths, case, the file layer on Horizon, the decrypted inputs | **done**, checked on the PC and the console |
 | 3. Engine dependencies: RSX/libgcm to deko3D, PPU/SPU threads to the Switch's cores | **done** (docs/engine.md), checked on the console |
 | 4. The port's build: ps3recomp's runtime and the lifted game with devkitA64 and CMake | **done** (docs/build.md): the runtime, the host side and the lifted game build and link into the game's NRO, in 134 minutes on a 2-core laptop; it can start once stage 6 gives it guest memory |
-| 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | **in progress**: the libraries are declared and checked, the game links with all of them; the test NRO's SDL2 check (controllers and sound, beside deko3D) waits for a console test |
+| 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | **in progress**: the libraries are declared and checked, the game links with all of them; on the console SDL2 and deko3D work together and every button reaches SDL2, but its sound at cellAudio's 256-frame buffers plays 25,600 frames a second; the next test times larger buffers |
 | 6. POSIX layer, alignment, guest memory on the Switch's heap | to do |
 | 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | to do |
 | 8. First boot of the game, with a fallback renderer | to do |
