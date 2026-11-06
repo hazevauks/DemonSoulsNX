@@ -19,3 +19,6 @@
 
 # Each port's reads of the pad, in the log.
 #PAD_TRACE=1
+
+# Crash on purpose this many seconds in, to try the crash report (SD_LOG/demonsouls_crash.txt).
+#DESNX_CRASH_TEST=30

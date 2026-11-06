@@ -17,6 +17,7 @@
 #include <switch.h>
 
 #include "platform/nx_cpu.h"
+#include "platform/nx_crash.h"
 #include "platform/nx_data.h"
 #include "platform/nx_gpu.h"
 #include "platform/nx_guest.h"
@@ -91,6 +92,7 @@ int main(int argc, char **argv)
     (void)argv;
 
     nx_log_init(DESNX_VERSION);
+    nx_crash_init(DESNX_VERSION ", the test NRO", NULL);
     nx_vfs_init();
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad;

@@ -27,7 +27,10 @@
 
 #include <switch.h>
 
+#include "ps3emu/ppu_lift.h"
+
 #include "../hos/hos_guest.h"
+#include "nx_crash.h"
 #include "nx_data.h"
 #include "nx_game_sdl.h"
 #include "nx_game_threads.h"
@@ -49,6 +52,7 @@
 #define RSX_LOCAL_SIZE  0x10000000ull
 
 extern uint8_t *vm_base;                            /* boot_main.cpp */
+extern __thread ppu_context *g_active_ctx;          /* the runtime's: the PPU code this thread runs */
 unsigned nx_port_flips(void);                       /* nx_port_glue.c: the game's frames so far */
 extern unsigned char g_vm_page_bitmap[65536 / 8];   /* runtime/spu/spu_vm_pagemap.c */
 
@@ -86,6 +90,47 @@ int __wrap_pthread_attr_setstacksize(pthread_attr_t *attr, size_t size)
         __atomic_fetch_add(&s_stack_bytes, (unsigned long long)size, __ATOMIC_RELAXED);
     }
     return rc;
+}
+
+/* ---- crashes (nx_crash.c) ---------------------------------------------------------------- */
+
+/* For the crash report, on the faulting thread: the PPU code it was running, if any. */
+static size_t guest_context(char *out, size_t size)
+{
+    const ppu_context *c = g_active_ctx;
+    if (!c)
+        return (size_t)snprintf(out, size, "the PS3 code: none on this thread\n");
+    if (!nx_crash_readable((uint64_t)(uintptr_t)c, sizeof *c))
+        return (size_t)snprintf(out, size, "the PS3 code: its context at %p cannot be read\n", (const void *)c);
+    size_t used = 0;
+    int n = snprintf(out, size, "the PS3 code (PPU thread %llu): cia 0x%08llx, lr 0x%08llx, ctr 0x%08llx\n",
+                     (unsigned long long)c->thread_id, (unsigned long long)c->cia, (unsigned long long)c->lr,
+                     (unsigned long long)c->ctr);
+    for (int r = 0; n > 0 && (used += (size_t)n) < size && r < 32; r += 4)
+        n = snprintf(out + used, size - used, "  r%-2d 0x%016llx  r%-2d 0x%016llx  r%-2d 0x%016llx  r%-2d 0x%016llx\n",
+                     r, (unsigned long long)c->gpr[r], r + 1, (unsigned long long)c->gpr[r + 1], r + 2,
+                     (unsigned long long)c->gpr[r + 2], r + 3, (unsigned long long)c->gpr[r + 3]);
+    return used < size ? used : size - 1;
+}
+
+/* With -Wl,--wrap=abort and --wrap=__assert_func: a report from where they were called, then
+ * what they do anyway. */
+void __real_abort(void) __attribute__((noreturn));
+void __real___assert_func(const char *file, int line, const char *func, const char *expr) __attribute__((noreturn));
+
+void __wrap_abort(void)
+{
+    nx_crash_report_here("abort()");
+    __real_abort();
+}
+
+void __wrap___assert_func(const char *file, int line, const char *func, const char *expr)
+{
+    char why[512];
+    snprintf(why, sizeof why, "assert(%s) failed, in %s, %s:%d", expr ? expr : "?", func ? func : "?",
+             file ? file : "?", line);
+    nx_crash_report_here(why);
+    __real___assert_func(file, line, func, expr);
 }
 
 /* Something the game needs is not there: say so on the screen, and wait for + to exit. */
@@ -151,8 +196,18 @@ static void *watch_thread(void *arg)
     unsigned last_threads = 0;
     NxThreadStats last_detached = {0};
     unsigned last_flips = 0;
+    /* DESNX_CRASH_TEST=<seconds> (settings.txt): a write to address 8 then, on purpose, to try the
+     * crash report */
+    const char *crash_test = getenv("DESNX_CRASH_TEST");
+    const unsigned crash_at = crash_test ? (unsigned)atoi(crash_test) : 0;
     for (unsigned seconds = 10;; seconds += 10) {
         svcSleepThread(10ull * 1000 * 1000 * 1000);
+        if (crash_at && seconds >= crash_at) {
+            nx_log("crash test: a write to address 8, on purpose (DESNX_CRASH_TEST=%u)\n", crash_at);
+            fflush(stdout);
+            volatile uint32_t *volatile nowhere = (volatile uint32_t *)(uintptr_t)8;
+            *nowhere = 1;
+        }
         const unsigned flips = nx_port_flips();
         nx_log("frames: %u in the last 10 s, %u in all\n", flips - last_flips, flips);
         last_flips = flips;
@@ -193,8 +248,10 @@ static void *boot_thread(void *arg)
 int __wrap_main(int argc, char **argv)
 {
     nx_log_init(DESNX_VERSION ", the game");
+    nx_crash_init(DESNX_VERSION ", the game", guest_context);
     nx_vfs_init();
     nx_settings_load();     /* after the drives, so a setting may name another */
+    nx_settings_args(argc, argv);
     NxSystem system;
     nx_system_read(&system);
     nx_system_log(&system);

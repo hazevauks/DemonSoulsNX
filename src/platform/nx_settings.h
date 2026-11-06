@@ -10,6 +10,10 @@ extern "C" {
 /* Sets each NAME=value of the file as an environment variable, logs it, and returns how many. */
 int nx_settings_load(void);
 
+/* The same for each NAME=value among the NRO's arguments (nxlink --args, tools/nxlink_run.py
+ * --set), after the file: they win. */
+int nx_settings_args(int argc, char **argv);
+
 #ifdef __cplusplus
 }
 #endif

@@ -34,6 +34,24 @@ static int is_name(const char *s)
     return 1;
 }
 
+int nx_settings_args(int argc, char **argv)
+{
+    int set = 0;
+    for (int i = 1; i < argc; i++) {
+        char *eq = argv[i] ? strchr(argv[i], '=') : NULL;
+        if (!eq)
+            continue;
+        *eq = '\0';
+        if (is_name(argv[i])) {
+            setenv(argv[i], eq + 1, 1);
+            nx_log("settings, from the NRO's arguments: %s=%s\n", argv[i], eq + 1);
+            set++;
+        }
+        *eq = '=';
+    }
+    return set;
+}
+
 int nx_settings_load(void)
 {
     FILE *f = fopen(NX_SETTINGS_FILE, "r");

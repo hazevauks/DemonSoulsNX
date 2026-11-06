@@ -245,6 +245,11 @@ int nx_guest_fault(uint32_t type, const uint8_t *exception)
     return R_SUCCEEDED(rc) ? 0 : -1;
 }
 
+uint64_t nx_guest_window(void)
+{
+    return (uint64_t)g.window;
+}
+
 void nx_guest_stats(NxGuestStats *out)
 {
     mutexLock(&g.lock);

@@ -202,6 +202,10 @@ has no loading at run time, and devkitPro's switch-ffmpeg 7.1 would have to be l
 The game's speed: about 11 frames a second at the title screen, on the null renderer, where the
 PS3 gives 30. Stages 16 and 17.
 
+Two of the game's imports have no HLE handler and get a faked CELL_OK: NIDs 0xAF505DEF (called
+from 0x00E491C4) and 0x36D0C2C5 (from 0x00E1240C), which neither ps3recomp's NID database nor
+Soulbrandt's notes name. The game goes on to its title screen past both.
+
 ## Roadmap
 
 | Stage | State |
@@ -215,7 +219,7 @@ PS3 gives 30. Stages 16 and 17.
 | 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | **done**: the game's mixer runs at 48,000 frames a second on SDL2 with 1024-frame buffers; cellPad gets only the slots with a controller, and the buttons reach the game in the PS3's positions. Checked in handheld mode; a Pro Controller and detached Joy-Cons take the same way and have not been on the console |
 | 8. First boot of the game, with a fallback renderer | **done**: on the null renderer the game boots to its title screen and runs its loop at about 11 frames a second, with its sound; Start and Cross reach it, it makes its save and plays its menu sounds. Nothing is drawn on the screen until the deko3D renderer (stage 12), and the movies need FFmpeg |
 | 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | **done**: the logs in `SD_LOG`, whole and readable; `tools/nxlink_run.py` sends an NRO to its place on the SD card and keeps its live log on the PC; `settings.txt` sets the runtime's options; `tools/summarize_log.py` sums a log up |
-| 10. Crash triage: alignment faults, missing system calls, null pointers | to do |
+| 10. Crash triage: alignment faults, missing system calls, null pointers | **in progress**: a crash writes `SD_LOG/demonsouls_crash.txt` (the fault decoded, registers, call stack, the PS3 code), `abort` and `assert` too, and `tools/crash_symbolize.py` names its addresses; the log summary lists the runtime's missing functions and system calls, unlifted calls and the guest's null pointers. The report waits for a console test |
 | 11. Asset loading: archives, materials, shaders, streaming | to do |
 | 12. Native deko3D renderer | to do |
 | 13. The game's passes: deferred lighting, shadows, post-processing, fog | to do |

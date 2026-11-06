@@ -3,12 +3,15 @@
  * On a fault, Horizon runs the process's entry point again on the faulting thread, with
  * x0 = the kind of exception and x1 = the kernel's copy of x0..x8, lr, sp, pc, pstate, esr and
  * far. hbloader passes that on to the NRO's entry, and libnx's start code branches here. This
- * takes the place of libnx's own entry, which can only report a crash: when the fault is in
- * the guest window, nx_guest_fault maps memory there and the faulting access runs again.
+ * takes the place of libnx's own entry, which can only report a crash: nx_exception (nx_crash.c)
+ * has nx_guest_fault map memory when the fault is in the guest window, and the faulting access
+ * runs again; any other fault it writes up in SD_LOG before the kernel ends the process.
  *
  * svcReturnFromException(0) puts back x0..x8, lr, sp, pc and pstate from the kernel's copy.
  * x9..x29, the NEON registers, FPCR and FPSR still hold the faulting thread's values, so they
- * are saved around the C call (x19..x29 by the C code itself).
+ * are saved around the C call: x9..x18 because the C code may use them, x19..x29 for the crash
+ * report (the C code keeps them itself; x29 is the frame pointer a backtrace starts from). The
+ * save area's address goes to nx_exception as its third argument.
  */
 
     .section .text.__libnx_exception_entry, "ax", %progbits
@@ -19,7 +22,7 @@ __libnx_exception_entry:
     adrp    x2, fault_stack_top
     add     x2, x2, :lo12:fault_stack_top
     mov     sp, x2
-    sub     sp, sp, #0x260
+    sub     sp, sp, #0x2c0
 
     stp     x9, x10, [sp, #0x000]
     stp     x11, x12, [sp, #0x010]
@@ -45,8 +48,16 @@ __libnx_exception_entry:
     stp     q26, q27, [sp, #0x200]
     stp     q28, q29, [sp, #0x220]
     stp     q30, q31, [sp, #0x240]
+    add     x3, sp, #0x260              /* past stp's reach from sp */
+    stp     x19, x20, [x3, #0x00]
+    stp     x21, x22, [x3, #0x10]
+    stp     x23, x24, [x3, #0x20]
+    stp     x25, x26, [x3, #0x30]
+    stp     x27, x28, [x3, #0x40]
+    str     x29, [x3, #0x50]
 
-    bl      nx_guest_fault              /* w0 = 0: the access can run again */
+    mov     x2, sp
+    bl      nx_exception                /* w0 = 0: the access can run again */
 
     ldp     x2, x3, [sp, #0x050]
     msr     fpcr, x2
@@ -79,9 +90,10 @@ __libnx_exception_entry:
     b       .
     .size   __libnx_exception_entry, . - __libnx_exception_entry
 
-/* The kernel lets one thread at a time handle an exception, so one stack is enough. */
+/* The kernel lets one thread at a time handle an exception, so one stack is enough: the crash
+ * report formats on it too. */
     .section .bss.nx_guest_fault_stack, "aw", %nobits
     .align  4
 fault_stack:
-    .space  0x4000
+    .space  0x8000
 fault_stack_top:

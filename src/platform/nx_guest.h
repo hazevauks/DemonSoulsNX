@@ -35,6 +35,9 @@ uint32_t nx_guest_commit(uint64_t guest, uint64_t size);
 
 void nx_guest_stats(NxGuestStats *out);
 
+/* The window's host address, or 0; takes no lock, for the crash report. */
+uint64_t nx_guest_window(void);
+
 /* Unmaps it all and gives the memory back to the heap: the process returns to hbloader, which
  * keeps running in it. Guest memory touched after this is a crash. */
 void nx_guest_close(void);

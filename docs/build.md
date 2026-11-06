@@ -176,6 +176,14 @@ created detached (`--wrap=pthread_create`) or detached later (its own `__syscall
 on a list, and a reaper thread joins each one, every 100 ms, once it has ended. The log counts
 them every 10 seconds (`threads:`).
 
+A crash, a fault that is not the guest's memory, goes through the same exception entry
+(`src/platform/nx_guest_fault.s`, which now saves x19 to x29 as well, for the call stack) to
+`src/platform/nx_crash.c`, which writes `SD_LOG/demonsouls_crash.txt` before the kernel ends the
+process: through the file system service and a buffer of its own, as the faulting thread may hold
+stdio's lock or malloc's. `--wrap=abort` and `--wrap=__assert_func` write one from where they were
+called. The game gives it a hook for the PS3 code of the faulting thread (the runtime's
+`g_active_ctx`).
+
 None of this needs a change to a vendored file, and all of it is link options: nothing compiles
 again.
 

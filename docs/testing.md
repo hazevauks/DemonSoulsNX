@@ -73,6 +73,28 @@ environment variables ps3recomp's runtime and Soulbrandt read on a PC (`DES_*`, 
 turn one on without a new NRO. `tools/make_sd.py` puts a template there once, all commented out
 (`assets/settings.txt`).
 
+A setting for one run only goes with nxlink, as one of the NRO's arguments, and wins over the file:
+
+```bash
+python tools/nxlink_run.py --address 192.168.1.12 --set DESNX_CRASH_TEST=30
+```
+
+## Crashes
+
+A fault that is not the guest's memory is a crash: the kernel ends the process. Before it does,
+the port writes `SD_LOG/demonsouls_crash.txt` (`src/platform/nx_crash.c`): what the fault was (a
+null pointer, an alignment fault, an undefined instruction...), its address, the registers, the call
+stack, and in the game the PS3 code the thread was running (`cia`, `lr`, the 32 registers).
+`abort()` and a failed `assert` write one too. Its addresses in the NRO read `nro+0x...`, which are
+its ELF's; on the PC, from devkitPro's MSYS2 shell,
+
+```bash
+python tools/crash_symbolize.py [SD_LOG/demonsouls_crash.txt]
+```
+
+names each one from the ELF of the build the console ran: `func_<PS3 address>` for lifted code.
+`DESNX_CRASH_TEST=<seconds>` crashes the game on purpose then, to try all of it.
+
 ## Reading a log
 
 ```bash
@@ -80,8 +102,10 @@ python tools/summarize_log.py [SD_LOG/demonsouls_log.txt]
 ```
 
 sums one up: for the game its settings, the frames, sound, threads and guest memory over time, the
-buttons that reached it, its files, waits that blocked, saves, movies and the last lines; for the test
-NRO each check. It also counts stray bytes, which would mean lines written over each other.
+buttons that reached it, its files, waits that blocked, the PS3 functions and system calls the
+runtime has not got, calls into code that was not lifted, the guest's null pointers, saves, movies
+and the last lines; for the test NRO each check. It also counts stray bytes, which would mean lines
+written over each other, and says when a crash report is beside the log.
 
 ## What the test NRO shows
 

@@ -64,6 +64,23 @@ def main():
 
     blocked = [l for l in lines if "EventFlagWait BLOCKED" in l and " 1s " in l]
     show("waits that blocked a second", blocked)
+    # what the runtime says it did not have: an HLE function, a system call, lifted code; and
+    # the guest's null pointers, which it reads as zero and drops
+    for title, mark in (("PS3 functions with no HLE handler", "[hle] UNRESOLVED NID"),
+                        ("system calls that are stubs", "(stub)"),
+                        ("indirect calls to code that was not lifted", "unresolved indirect call"),
+                        ("the guest's null pointers", "[null-")):
+        found = [l for l in lines if mark in l]
+        if found:
+            print("\n%s: %d, the first:" % (title, len(found)))
+            for line in found[:5]:
+                print("  " + line.strip()[:200])
+    show("crash test", [l for l in lines if l.startswith("crash test:")])
+    crash = args.log.with_name("demonsouls_crash.txt")
+    if crash.is_file():
+        print("\n%s is beside it (%s): python tools/crash_symbolize.py names its addresses"
+              % (crash.name, "newer than the log" if crash.stat().st_mtime >= args.log.stat().st_mtime
+                 else "older than the log, from another run"))
     if any("[spurs-trace]" in l for l in lines):
         print("\nthe SPURS trace is in the log ([spurs-trace] lines)")
     show("save data", [l for l in lines if "[cellSaveData] SAVE complete" in l or "AutoLoad" in l])

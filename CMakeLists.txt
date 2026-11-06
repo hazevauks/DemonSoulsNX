@@ -37,6 +37,7 @@ dkp_add_embedded_binary_library(desnx_shaders triangle_vsh triangle_fsh)
 # ---------------------------------------------------------------------------
 add_library(desnx_platform STATIC
 	src/platform/nx_cpu_probe.c
+	src/platform/nx_crash.c
 	src/platform/nx_data.c
 	src/platform/nx_gpu_probe.c
 	src/platform/nx_guest.c
@@ -213,6 +214,7 @@ if(TARGET desnx_host AND DESNX_PPU_CHUNKS)
 	# nx_game_sdl.c: cellAudio's device buffer and cellPad's controllers, as the Switch's SDL2 needs
 	target_link_options(demonsouls_game PRIVATE -Wl,-Map=${CMAKE_BINARY_DIR}/demonsouls_game.map -Wl,--gc-sections
 		-Wl,--wrap=main -Wl,--wrap=pthread_attr_setstacksize -Wl,--wrap=setvbuf -Wl,--wrap=pthread_create
+		-Wl,--wrap=abort -Wl,--wrap=__assert_func
 		-Wl,--wrap=SDL_OpenAudioDevice -Wl,--wrap=SDL_QueueAudio -Wl,--wrap=SDL_SetThreadPriority
 		-Wl,--wrap=SDL_IsGameController -Wl,--wrap=SDL_GameControllerOpen -Wl,--wrap=SDL_GameControllerGetAttached
 		-Wl,--wrap=SDL_GameControllerGetButton -Wl,--wrap=SDL_GameControllerGetAxis)
