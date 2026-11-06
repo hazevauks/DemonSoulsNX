@@ -42,6 +42,7 @@ add_library(desnx_platform STATIC
 	src/platform/nx_guest.c
 	src/platform/nx_log.c
 	src/platform/nx_sdl_probe.c
+	src/platform/nx_settings.c
 	src/platform/nx_system.c
 	src/platform/nx_vfs.c
 	src/platform/nx_vfs_probe.c

@@ -16,6 +16,7 @@ switch/demonsouls/
   game/            your disc's folder: PS3_DISC.SFB and PS3_GAME (the game's /dev_bdvd),
                    with EBOOT.elf decrypted beside EBOOT.BIN's place
   firmware/        libsre_image.bin, made from your firmware's libsre.prx
+  settings.txt     options for the game, see below
   hdd0/            the PS3's drive (/dev_hdd0): saves; made by the port
   hdd1/            the game's cache (/dev_hdd1); made by the port
   SD_LOG/          the logs, written by the port
@@ -40,13 +41,41 @@ Copy them into this repository's `SD_LOG/` to look at them; git ignores them.
 
 ## nxlink
 
-For a live log, with the console on the same network and the homebrew menu open:
+nxlink sends an NRO over the network, with no SD card to copy, and brings its log back as it runs.
+On the console, start the homebrew menu by title takeover and press Y there for its netloader; then,
+from devkitPro's MSYS2 shell on the PC:
 
 ```bash
-nxlink -s build/demonsouls.nro
+python tools/nxlink_run.py
 ```
 
-The log then goes to the PC and to the SD card at the same time.
+It sends the game's NRO (`--test` for the test NRO) to where it lives on the SD card,
+`switch/demonsouls/`, so the homebrew menu starts the new one from then on, and starts it. The log
+is shown and saved to `SD_LOG/nxlink_<date>_<name>.txt` until the NRO exits or the console closes it.
+nxlink finds the console by itself; `--address` names it when it does not. Windows asks once to let
+nxlink through its firewall, which the log needs. The game's NRO is 173 MB: it takes a minute or two
+over Wi-Fi.
+
+The NRO's own log on the SD card is written as well. With nxlink the game's runtime prints to the
+network only, so the PC's copy is the whole one.
+
+## Settings
+
+`switch/demonsouls/settings.txt` holds options for the game, one `NAME=value` a line: the
+environment variables ps3recomp's runtime and Soulbrandt read on a PC (`DES_*`, `PS3_*`, `PAD_*`,
+`SPURS_*`). The game sets them before its boot, and the log lists each (`settings:`), so a test can
+turn one on without a new NRO. `tools/make_sd.py` puts a template there once, all commented out
+(`assets/settings.txt`).
+
+## Reading a log
+
+```bash
+python tools/summarize_log.py [SD_LOG/demonsouls_log.txt]
+```
+
+sums one up: for the game its settings, the frames, sound, threads and guest memory over time, the
+buttons that reached it, its files, waits that blocked, saves, movies and the last lines; for the test
+NRO each check. It also counts stray bytes, which would mean lines written over each other.
 
 ## What the test NRO shows
 

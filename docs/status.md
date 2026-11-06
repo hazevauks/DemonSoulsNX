@@ -203,7 +203,7 @@ PS3 gives 30. Stages 16 and 17.
 | 6. POSIX layer, alignment, guest memory on the Switch's heap | **done**: the game's NRO starts, its boot runs on guest memory (467 MB, 61 mappings, nothing refused) and creates the game's 22 PPU threads on capped host stacks |
 | 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | **done**: the game's mixer runs at 48,000 frames a second on SDL2 with 1024-frame buffers; cellPad gets only the slots with a controller, and the buttons reach the game in the PS3's positions. Checked in handheld mode; a Pro Controller and detached Joy-Cons take the same way and have not been on the console |
 | 8. First boot of the game, with a fallback renderer | **done**: on the null renderer the game boots to its title screen and runs its loop at about 11 frames a second, with its sound; Start and Cross reach it, it makes its save and plays its menu sounds. Nothing is drawn on the screen until the deko3D renderer (stage 12), and the movies need FFmpeg |
-| 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | started: the log exists |
+| 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | **in progress**: the logs in `SD_LOG`, whole and readable; `tools/nxlink_run.py` sends an NRO to its place on the SD card and keeps its live log; `settings.txt` sets the runtime's options; `tools/summarize_log.py` sums a log up. nxlink and the settings wait for a console test |
 | 10. Crash triage: alignment faults, missing system calls, null pointers | to do |
 | 11. Asset loading: archives, materials, shaders, streaming | to do |
 | 12. Native deko3D renderer | to do |

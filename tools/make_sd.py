@@ -56,6 +56,12 @@ def main():
     if game_nro.is_file():
         place(game_nro, app / "demonsouls_game.nro")
         print("game NRO: %s" % (APP / "demonsouls_game.nro").as_posix())
+    # the game's options (src/platform/nx_settings.c): the commented template, once, so the card's
+    # own settings are never overwritten
+    settings = app / "settings.txt"
+    if not settings.exists():
+        shutil.copy2(ROOT / "assets" / "settings.txt", settings)
+        print("settings: %s (all commented out)" % (APP / "settings.txt").as_posix())
 
     if args.no_game:
         return 0

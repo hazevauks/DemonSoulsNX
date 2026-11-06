@@ -1,0 +1,21 @@
+# Demon's Souls for Nintendo Switch: options for the game (demonsouls_game.nro).
+#
+# One NAME=value a line, read as the game starts; a line starting with # is left out, so take
+# the # off a line to use it. These are the options ps3recomp's runtime and Soulbrandt read from
+# environment variables on a PC. The log lists the ones it set ("settings:").
+
+# Skip the boot logos (2: shorten them).
+#DES_SKIP_INTRO=1
+
+# Skip the opening movie.
+#DES_SKIP_INTRO_MOVIE=1
+
+# Swap buttons, the game's = the controller's PS3 name. The default is by position:
+# B is Cross, A Circle, Y Square, X Triangle. For confirming with A:
+#PAD_MAP=cross=circle,circle=cross
+
+# The runtime's per-event lines in the log (1), or none (0). More lines, a slower game.
+#PS3_VERBOSE=1
+
+# Each port's reads of the pad, in the log.
+#PAD_TRACE=1

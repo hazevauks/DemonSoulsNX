@@ -7,9 +7,10 @@
 #define NX_GAME_DIR         NX_APP_DIR "/game"           /* the disc's folder: PS3_DISC.SFB, PS3_GAME */
 #define NX_HDD0_DIR         NX_APP_DIR "/hdd0"           /* the PS3's drive (/dev_hdd0): saves */
 #define NX_HDD1_DIR         NX_APP_DIR "/hdd1"           /* the game's cache (/dev_hdd1), emptied at every start */
-#define NX_FIRMWARE_DIR     NX_APP_DIR "/firmware"       /* libsre.prx, decrypted from your PS3 firmware */
+#define NX_FIRMWARE_DIR     NX_APP_DIR "/firmware"       /* libsre_image.bin, made from your firmware's libsre.prx */
 #define NX_SHADER_CACHE_DIR NX_APP_DIR "/shader_cache"   /* the game's shaders, compiled for deko3D */
 #define NX_LOG_DIR          NX_APP_DIR "/SD_LOG"
+#define NX_SETTINGS_FILE    NX_APP_DIR "/settings.txt"   /* the runtime's options, read as the game starts */
 
 #define NX_LOG_FILE         "demonsouls_log.txt"
 #define NX_LOG_FILE_OLD     "demonsouls_log_previous.txt"

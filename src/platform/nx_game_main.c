@@ -34,6 +34,7 @@
 #include "nx_guest.h"
 #include "nx_log.h"
 #include "nx_paths.h"
+#include "nx_settings.h"
 #include "nx_system.h"
 #include "nx_vfs.h"
 
@@ -122,11 +123,14 @@ static void log_guest_memory(const char *when)
 {
     NxGuestStats stats;
     nx_guest_stats(&stats);
-    nx_log("guest memory %s: %llu MB in %u mappings, %u faults answered, %u refused", when,
-           (unsigned long long)(stats.mapped >> 20), stats.maps, stats.faults, stats.refused);
+    /* one write, so that no other thread's line lands inside it */
+    char refused[64] = "";
     if (stats.refused)
-        nx_log(" (the first at %#llx, result %#x)", (unsigned long long)stats.refused_at, stats.refused_rc);
-    nx_log("; host stacks so far: %u, %llu MB, %u capped\n", s_threads, s_stack_bytes >> 20, s_capped);
+        snprintf(refused, sizeof refused, " (the first at %#llx, result %#x)", (unsigned long long)stats.refused_at,
+                 stats.refused_rc);
+    nx_log("guest memory %s: %llu MB in %u mappings, %u faults answered, %u refused%s; host stacks so far: %u, "
+           "%llu MB, %u capped\n", when, (unsigned long long)(stats.mapped >> 20), stats.maps, stats.faults,
+           stats.refused, refused, s_threads, s_stack_bytes >> 20, s_capped);
 }
 
 /* The log stays open: stdout and stderr are its stream, and other threads may still print.
@@ -190,6 +194,7 @@ int __wrap_main(int argc, char **argv)
 {
     nx_log_init(DESNX_VERSION ", the game");
     nx_vfs_init();
+    nx_settings_load();     /* after the drives, so a setting may name another */
     NxSystem system;
     nx_system_read(&system);
     nx_system_log(&system);
