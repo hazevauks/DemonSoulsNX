@@ -35,7 +35,7 @@ typedef struct {
     uint64_t free_mb;               /* free space on the SD card */
     bool eboot;                     /* PS3_GAME/USRDIR/EBOOT.elf, decrypted */
     unsigned scripts, scripts_expected;  /* .sdat.unedat copies beside their .sdat */
-    bool libsre;                    /* firmware/libsre.prx */
+    bool libsre;                    /* firmware/libsre_image.bin, the lifted libsre's image */
     const char *failed;             /* the first check that failed, or NULL */
 } NxVfsProbe;
 

@@ -74,7 +74,7 @@ static void show(const NxSystem *system, const NxGuestProbe *guest, const NxGpuP
             printf("File layer:   works, %u MB/s, %u us a small file\n", files->read_mbps, files->small_file_us);
         else
             printf("File layer:   failed at %s, see the log\n", files->failed);
-        printf("Decrypted:    EBOOT.elf %s, scripts %u of %u, libsre.prx %s\n", files->eboot ? "yes" : "no",
+        printf("Decrypted:    EBOOT.elf %s, scripts %u of %u, libsre image %s\n", files->eboot ? "yes" : "no",
                files->scripts, files->scripts_expected, files->libsre ? "yes" : "no");
     }
 

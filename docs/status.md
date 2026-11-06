@@ -21,6 +21,7 @@ What has been checked, and how. Nothing here counts as working until a console h
 | The game builds for Horizon: the 57 lifted chunks, the SPU programs and libsre compile with devkitA64 and link with the host side, the runtime, the platform layer and the libraries, with no symbol missing, into a 173 MB NRO (161 MB of code); it starts at stage 6 | `cmake --build build --target demonsouls_game_nro`, docs/build.md |
 | The game's NRO holds the HLE NID table (its 1,261 handlers registered) and all of Soulbrandt's host files: the host side links as objects, as `des_boot` does | `nm`: `ppu_hle_register_all` is the table's, `cellPadGetData` and `cellAudioInit` are in |
 | The libraries are declared in one place and their versions checked at configure time: libnx 4.12.0, deko3D 0.5.0, SDL2 2.28.5 (with Mesa 20.1.0, never started), zlib 1.3.1 | `cmake/desnx_libraries.cmake`, docs/build.md |
+| The game's start on the Switch: libnx's start code calls `__wrap_main`, which sets up the log, the drives, guest memory and the EBOOT's path, then the boot's own `main`; host stacks above 16 MB get 16 MB. Link options only: no lifted chunk compiles again | `nm` and the start code's branch, `tools/check_rebuild.py` (57 of 57 unchanged), docs/build.md |
 | Every compressed file inflates: 3,600 DCX and DCP files, 1,750 MB to 3,067 MB | `tools/check_archives.py` |
 | 3,585 raw files are byte for byte their `.dcx` (3.01 GB); 3 differ | `tools/check_archives.py` |
 | The 26 encrypted scripts are on the disc unencrypted too, with the bytes decrypting gives | `tools/check_inputs.py`, against Soulbrandt's hashes |
@@ -96,6 +97,7 @@ timed the sound at larger buffers):
 | The sound device, opened as cellAudio opens it: 48 kHz, float, stereo, 256 frames a buffer | opens; the driver turns the float into 16-bit for the audio renderer |
 | Frames a second the device takes from the queue at 256 frames a buffer | **25,600, not 48,000**: one buffer every 10 ms, so the rest of each 10 ms is silence. switch-sdl2's driver keeps two buffers in the audio renderer and waits for each to start before it takes the next; a 5.3 ms buffer is shorter than that wait. cellAudio paces the game's audio clock on this rate, so it would run at about half speed |
 | The same at 512, 1024 and 2048 frames a buffer | 40,690, **48,091** and 47,866 a second: from 1024 frames (21.3 ms) a buffer the device keeps up, within the measurement's half a percent. Stage 7 opens SDL2 with 1024 frames on the Switch; cellAudio already allows a device buffer larger than its blocks |
+| A tone at 256 frames a buffer, then at 1024 | the first sounds rougher, as the silence between its buffers would make it |
 
 ## Not checked yet
 
@@ -115,8 +117,12 @@ Which of the two copies the game opens (raw or `.dcx`): the runtime's log of ope
 first boot of the game.
 
 How many separate pieces the kernel allows before it runs out of memory blocks: each piece
-mapped on its own stays a block of its own. Stage 6 maps the game's memory in large ranges and
-leaves 64 KB pieces for stray touches; it will log how many pieces it maps.
+mapped on its own stays a block of its own. The game maps what the runtime commits in whole
+ranges, and 1 MB pieces for stray touches; its log counts them.
+
+The game on its guest memory (stage 6): how far the boot gets, how much memory and how many
+mappings the game takes, and how many threads, with what stacks. The first run of the game NRO
+says.
 
 ## Roadmap
 
@@ -127,7 +133,7 @@ leaves 64 KB pieces for stray touches; it will log how many pieces it maps.
 | 3. Engine dependencies: RSX/libgcm to deko3D, PPU/SPU threads to the Switch's cores | **done** (docs/engine.md), checked on the console |
 | 4. The port's build: ps3recomp's runtime and the lifted game with devkitA64 and CMake | **done** (docs/build.md): the runtime, the host side and the lifted game build and link into the game's NRO, in 134 minutes on a 2-core laptop; it can start once stage 6 gives it guest memory |
 | 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | **done**: the libraries are declared and checked, the game links with all of them; on the console SDL2 and deko3D work together, every button reaches SDL2, and its sound keeps up from 1024 frames a buffer (cellAudio's 256 play at half rate) |
-| 6. POSIX layer, alignment, guest memory on the Switch's heap | to do |
+| 6. POSIX layer, alignment, guest memory on the Switch's heap | **in progress**: the game's start, guest memory under the runtime's commits and faults, host stacks; its NRO waits for a console test |
 | 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | to do: SDL2's sound with 1024 frames a buffer, cellPad reporting only the connected controllers |
 | 8. First boot of the game, with a fallback renderer | to do |
 | 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | started: the log exists |

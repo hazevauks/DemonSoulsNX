@@ -58,6 +58,13 @@ These decide whether the port works, and each has its own stage.
    512 MB mapped and zeroed in 90 ms, a 64 KB piece in 20 µs, a fault answered in 28 µs. Each
    piece stays a block of its own for the kernel, whose supply of blocks is limited, so the
    runtime maps the game's memory in large ranges and leaves pieces for stray touches.
+
+   In the game (stage 6), the runtime commits memory the POSIX way, with `mprotect`, and the
+   shim's `mprotect` hands a commit in the window to `nx_guest_commit`, which maps the whole range
+   at once: the ELF's segments, each `sys_memory_allocate`, the SPU DMA's pages. The RSX's 256 MB
+   is mapped at the start. Anything else, the stacks and stray touches, is mapped by the fault
+   handler a 1 MB piece at a time, not 64 KB, to spend fewer blocks. `src/platform/nx_game_main.c`
+   sets this up before ps3recomp's boot runs (docs/build.md).
 2. **Cores** ([engine.md](engine.md)). The PS3 runs the game on a two-thread PPU and six SPUs. The Switch gives a game three
    1 GHz Cortex-A57 cores (a fourth in part). The SPU programs become host tasks, and the game's
    own threads share the cores. Soulbrandt's notes show HighGraphics waiting in libsre's queue for

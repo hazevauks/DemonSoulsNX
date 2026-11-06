@@ -21,8 +21,11 @@
 
 #include "mbedtls/platform_time.h"
 
+#include "hos_guest.h"
+
 #define PAGE            0x1000
 #define MAX_MAPPINGS    512
+#define GUEST_SPACE     0x100000000ull
 
 /* ---- mmap: heap memory and copies of files ---------------------------------------------- */
 
@@ -92,7 +95,9 @@ void *mmap(void *address, size_t length, int prot, int flags, int fd, off_t offs
         errno = ENOSYS;
         return MAP_FAILED;
     }
-    if ((flags & MAP_ANONYMOUS) && prot == PROT_NONE) {    /* a reservation of address space */
+    /* a reservation of address space, or one as large as the guest's 4 GB: the boot's own
+     * (boot_main.cpp), which finds vm_base already set to nx_guest's window and keeps it */
+    if ((flags & MAP_ANONYMOUS) && (prot == PROT_NONE || length >= GUEST_SPACE)) {
         errno = ENOMEM;
         return MAP_FAILED;
     }
@@ -141,10 +146,36 @@ int munmap(void *address, size_t length)
     return 0;
 }
 
-/* Accepted on memory mmap handed out, but not enforced: the heap has no page protection here. */
+/* ---- the guest's 4 GB: src/platform/nx_guest.c maps it ---------------------------------- */
+
+static uintptr_t guest_window;
+static uint64_t guest_size;
+static uint32_t (*guest_commit)(uint64_t guest, uint64_t size);
+
+void hos_guest_window(void *window, uint64_t size, uint32_t (*commit)(uint64_t guest, uint64_t size))
+{
+    guest_size = size;
+    guest_commit = commit;
+    __atomic_store_n(&guest_window, (uintptr_t)window, __ATOMIC_RELEASE);
+}
+
+/* Accepted on memory mmap handed out, but not enforced: the heap has no page protection here.
+ * In the guest's window, making memory readable or writable is how the runtime commits it
+ * (vm_commit, VirtualAlloc's MEM_COMMIT): nx_guest maps it there and then, in one piece. Taking
+ * access away (a stack's guard page, a decommit) is accepted and not enforced either. */
 int mprotect(void *address, size_t length, int prot)
 {
-    (void)prot;
+    const uintptr_t window = __atomic_load_n(&guest_window, __ATOMIC_ACQUIRE);
+    if (window && (uintptr_t)address >= window && (uintptr_t)address - window < guest_size) {
+        if (!(prot & (PROT_READ | PROT_WRITE)) || length == 0)
+            return 0;
+        if (guest_commit((uintptr_t)address - window, length) != 0) {
+            errno = ENOMEM;
+            return -1;
+        }
+        return 0;
+    }
+
     mutexLock(&mappings_lock);
     const int slot = find(address, length);
     mutexUnlock(&mappings_lock);

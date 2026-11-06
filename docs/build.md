@@ -55,7 +55,7 @@ vendored files stay as they are:
 
 | `src/hos/` | For | What it does |
 | --- | --- | --- |
-| `include/sys/mman.h` | the memory manager, the file mapper, the Win32 layer | `mmap` gives heap memory (zeroed) and read-only copies of files. It cannot reserve address space (ENOMEM) or place memory at an address (ENOSYS), and `mprotect` is accepted but not enforced: guest memory and its pages go through `src/platform/nx_guest.c` instead, from stage 6 |
+| `include/sys/mman.h` | the memory manager, the file mapper, the Win32 layer | `mmap` gives heap memory (zeroed) and read-only copies of files. It cannot reserve address space, or map 4 GB or more (ENOMEM), or place memory at an address (ENOSYS), and `mprotect` is accepted but not enforced. In the guest's window, `mprotect` making memory readable or writable is how the runtime commits it, and `src/platform/nx_guest.c` maps it there (`hos_guest.h`) |
 | `include/dlfcn.h` | crash reports, the split build | nothing is loaded: the port is one NRO |
 | `include/ucontext.h` | cellFiber | fails with ENOSYS; Demon's Souls does not use fibers |
 | `include/ifaddrs.h` | cellNetCtl, which includes it without calling it | fails with ENOSYS |
@@ -67,8 +67,10 @@ vendored files stay as they are:
 One vendored file needed a change, guarded by `__SWITCH__` (third_party/README.md):
 `runtime/platform/win32_compat.c` parks threads and catches faults with signals, which Horizon does
 not have. There `SuspendThread` fails, the failure Win32 callers already check, and vectored
-exception handlers are registered but not yet called. Faults on Horizon reach the process's
-exception entry (`src/platform/nx_guest_fault.s`); handing them to this list is stage 6's.
+exception handlers are registered but not called. Faults on Horizon reach the process's exception
+entry (`src/platform/nx_guest_fault.s`), which maps guest memory. Nothing the game needs registers
+a handler: the runtime's own are debugging aids (a guard page on a watched word), and a crash
+report, which would use the list, is stage 10's.
 
 GCC 16 gives 126 warnings in ps3recomp's own code (misleading indentation, sign comparisons,
 format truncation and the like); none come from `src/hos/`.
@@ -124,9 +126,28 @@ archive, had neither.
 Linked whole with the runtime, as before, the host side leaves exactly what the lift provides: the
 lifted code's `function_table` and `function_table_count`, and 60 lifted functions
 (`func_<address>`) that Soulbrandt's game code calls by name. Plus `spurs_rt_alloc_queue`, which an
-ordinary link never asks for. `boot_main.cpp` defines `main`, so in the game's NRO it is the entry
-point; its memory and exception handling still have to go through `src/platform/nx_guest.c`, which
-is stage 6.
+ordinary link never asks for.
+
+### The game's start
+
+`boot_main.cpp` defines `main`, and it stays as it is. The game links with `-Wl,--wrap=main`, so
+libnx's start code calls `__wrap_main` in `src/platform/nx_game_main.c` (a host-side file), which
+gives the boot what a PC gives it and then calls the boot's `main`:
+
+| What the boot expects | On the Switch |
+| --- | --- |
+| a console, or a log | the log in `SD_LOG`, with stdout too: the game has no text screen |
+| the game's folder | the PS3's drives on the SD card (`nx_vfs`), and a check of the folder, `EBOOT.elf` and the libsre image, with a screen saying what is missing |
+| 4 GB of address space on a 4 GB boundary | `nx_guest`'s window as `vm_base`. Off Windows the boot maps 8 GB and keeps an aligned 4 GB inside it; the shim refuses a mapping that large, and the boot goes on with the `vm_base` it finds. The RSX's 256 MB is mapped at the start |
+| the EBOOT's path on its command line | `game/PS3_GAME/USRDIR/EBOOT.elf` |
+| a main thread with a large stack | a thread of its own with 16 MB: the lifted code nests a host call for each guest call |
+
+The runtime gives each PPU thread a 256 MB host stack, a reservation a PC fills only as the stack
+grows. libnx takes a thread's whole stack from the heap at once, so twenty threads would take the
+console's memory. With `-Wl,--wrap=pthread_attr_setstacksize`, a host stack above 16 MB gets 16 MB,
+what the runtime gives SPU threads anyway; the log says how many threads and how much memory.
+
+Neither needs a change to a vendored file, and both are link options: nothing compiles again.
 
 ## The game's code
 
@@ -196,5 +217,6 @@ Update can take memory of its own: during the second build its service held 7 GB
 the safe choice; four would leave too little memory for the largest chunks (14 MB of C++).
 
 `work/` is in `.gitignore`, and `tools/check_repo.py` refuses it. The NRO that comes out holds code
-made from your game: it stays on your PC and your console. `tools/make_sd.py` takes the libsre image
-to `firmware/` on the SD card, where its glue looks (`PS3_LIBSRE_IMAGE`).
+made from your game: it stays on your PC and your console. `tools/make_sd.py` puts it beside the
+test NRO as `demonsouls_game.nro` (the homebrew menu shows it as version "0.0.1 game"), and takes the
+libsre image to `firmware/` on the SD card, where its glue looks (`PS3_LIBSRE_IMAGE`).

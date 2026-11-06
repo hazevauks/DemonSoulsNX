@@ -26,7 +26,6 @@
 #define MB (1024 * 1024)
 
 #define EBOOT_ELF_SIZE  28222408u       /* third_party/soulbrandt/tools/setup/des_setup/game_table.json */
-#define LIBSRE_SIZE     239344u
 
 static uint64_t us_since(uint64_t tick)
 {
@@ -312,8 +311,8 @@ static void check_decrypted(NxVfsProbe *out)
 
     out->eboot = peek(NX_GAME_DIR "/PS3_GAME/USRDIR/EBOOT.elf", head, &size) && size == EBOOT_ELF_SIZE &&
                  memcmp(head, "\x7f" "ELF", 4) == 0;
-    out->libsre = peek(NX_FIRMWARE_DIR "/libsre.prx", head, &size) && size == LIBSRE_SIZE &&
-                  memcmp(head, "\x7f" "ELF", 4) == 0;
+    /* what the lifted libsre's glue loads (PS3_LIBSRE_IMAGE), made on the PC from libsre.prx */
+    out->libsre = peek(NX_FIRMWARE_DIR "/libsre_image.bin", head, &size) && size > 0;
 
     /* each .sdat's header gives its plain size; the copy beside it must have that size */
     for (unsigned i = 0; i < sizeof script_folders / sizeof script_folders[0]; i++) {
@@ -340,7 +339,7 @@ static void check_decrypted(NxVfsProbe *out)
         }
         closedir(dir);
     }
-    nx_log("files: decrypted on the PC: EBOOT.elf %s, %u of %u script files, firmware/libsre.prx %s\n",
+    nx_log("files: decrypted on the PC: EBOOT.elf %s, %u of %u script files, firmware/libsre_image.bin %s\n",
            out->eboot ? "found" : "not yet", out->scripts, out->scripts_expected, out->libsre ? "found" : "not yet");
 }
 

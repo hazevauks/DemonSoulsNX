@@ -11,9 +11,11 @@ PC). Copy what is inside `SD_CARD/` to the root of the SD card:
 
 ```
 switch/demonsouls/
-  demonsouls.nro   the port
-  game/            your disc's folder: PS3_DISC.SFB and PS3_GAME (the game's /dev_bdvd)
-  firmware/        libsre.prx, once you have decrypted it
+  demonsouls.nro   the test NRO: checks the console and the game's files
+  demonsouls_game.nro  the game, once you have built it (docs/build.md): for your card only
+  game/            your disc's folder: PS3_DISC.SFB and PS3_GAME (the game's /dev_bdvd),
+                   with EBOOT.elf decrypted beside EBOOT.BIN's place
+  firmware/        libsre_image.bin, made from your firmware's libsre.prx
   hdd0/            the PS3's drive (/dev_hdd0): saves; made by the port
   hdd1/            the game's cache (/dev_hdd1); made by the port
   SD_LOG/          the logs, written by the port
@@ -75,3 +77,17 @@ Stage 2 adds the `files:` lines: the game's first files opened by the PS3's path
 mixed case the game uses), three DCX files inflated, the SD card's speed for a long read, a seek
 and a small file, the game's way of writing its cache (in `hdd1/`, removed again), and which of the
 files decrypted on the PC are on the card. It reads about 80 MB and takes a few seconds.
+
+## What the game NRO shows
+
+`demonsouls_game.nro` is the game itself; in the homebrew menu it is the "Demon's Souls" whose
+version reads "0.0.1 game". Start it the same way, with title takeover. If something it needs is
+missing (the game's folder, `EBOOT.elf`, the libsre image, enough memory), a text screen says what,
+and + exits. Otherwise the screen stays black: the game draws nothing on the Switch yet (stage 8).
+
+Stage 6 is the guest memory under the game. The log's `guest memory` lines give the window and
+what is mapped at the start, then, every 10 seconds while it changes, how much the game has
+mapped, in how many pieces, how many faults were answered, and the threads' host stacks. Between
+them come the boot's own lines (`[boot]`, `[boot-dbg]`, `[SYS]` and the like), as far as the game
+gets. Give it a minute; if it does not end by itself, close it from the HOME menu, and copy the
+log.

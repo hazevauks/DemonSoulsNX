@@ -3,6 +3,8 @@
 
     python tools/make_sd.py [--nro build/demonsouls.nro] [--game game_data/disc] [--no-game]
 
+build/demonsouls_game.nro, the game, comes along as demonsouls_game.nro when it has been built.
+
 The game's files are linked, not copied, when they are on the same drive, so the folder
 costs no extra space. The disc's EBOOT.BIN is left out: it is encrypted, and the console
 never runs it (the game's code is recompiled into the NRO). What tools/check_inputs.py put in
@@ -48,6 +50,12 @@ def main():
     (app / "SD_LOG").mkdir(parents=True, exist_ok=True)
     shutil.copy2(args.nro, app / "demonsouls.nro")
     print("NRO: %s" % (APP / "demonsouls.nro").as_posix())
+    # the game's own NRO, once it is built (docs/build.md): code made from your EBOOT, for your
+    # SD card only
+    game_nro = ROOT / "build" / "demonsouls_game.nro"
+    if game_nro.is_file():
+        place(game_nro, app / "demonsouls_game.nro")
+        print("game NRO: %s" % (APP / "demonsouls_game.nro").as_posix())
 
     if args.no_game:
         return 0

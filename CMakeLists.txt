@@ -121,7 +121,10 @@ if(DESNX_RUNTIME AND DESNX_HOST)
 		${SOULBRANDT_PORT}/des_route.cpp
 		${SOULBRANDT_PORT}/des_ui_stub.cpp      # no launcher UI: Soulbrandt's own build without it
 		${CMAKE_SOURCE_DIR}/src/platform/nx_port_glue.c
+		${CMAKE_SOURCE_DIR}/src/platform/nx_game_main.c   # the Switch's start, before the boot's main
 	)
+	set_property(SOURCE ${CMAKE_SOURCE_DIR}/src/platform/nx_game_main.c
+		APPEND PROPERTY COMPILE_DEFINITIONS DESNX_VERSION="${PROJECT_VERSION}")
 	set_target_properties(desnx_host PROPERTIES C_STANDARD 17 CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 	target_include_directories(desnx_host BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/src/hos/include)
 	target_include_directories(desnx_host PRIVATE
@@ -202,15 +205,24 @@ if(TARGET desnx_host AND DESNX_PPU_CHUNKS)
 		-Wno-unused-but-set-variable)
 	target_compile_definitions(demonsouls_game PRIVATE _GNU_SOURCE DS_NO_SHADOW_STACK)
 	target_link_libraries(demonsouls_game PRIVATE desnx_host desnx_platform nx m)
-	target_link_options(demonsouls_game PRIVATE -Wl,-Map=${CMAKE_BINARY_DIR}/demonsouls_game.map -Wl,--gc-sections)
+	# libnx's start code calls nx_game_main.c's __wrap_main, which sets up the Switch and then runs
+	# the boot's main; and host stacks are capped at 16 MB, as libnx takes a whole stack from the heap
+	target_link_options(demonsouls_game PRIVATE -Wl,-Map=${CMAKE_BINARY_DIR}/demonsouls_game.map -Wl,--gc-sections
+		-Wl,--wrap=main -Wl,--wrap=pthread_attr_setstacksize)
 	# Hours to compile on a laptop, so only on request: cmake --build build --target demonsouls_game_nro
 	# (nx_create_nro would put it in every build).
 	set_target_properties(demonsouls_game PROPERTIES EXCLUDE_FROM_ALL ON)
+	# the version tells it from the test NRO in the homebrew menu, beside it in switch/demonsouls
+	nx_generate_nacp(demonsouls_game.nacp
+		NAME "Demon's Souls"
+		AUTHOR "hazevauks"
+		VERSION "${PROJECT_VERSION} game"
+	)
 	add_custom_command(
 		OUTPUT ${CMAKE_BINARY_DIR}/demonsouls_game.nro
 		COMMAND ${NX_ELF2NRO_EXE} $<TARGET_FILE:demonsouls_game> ${CMAKE_BINARY_DIR}/demonsouls_game.nro
-			--icon=${CMAKE_SOURCE_DIR}/assets/icon.jpg --nacp=${CMAKE_BINARY_DIR}/demonsouls.nacp
-		DEPENDS demonsouls_game ${CMAKE_SOURCE_DIR}/assets/icon.jpg ${CMAKE_BINARY_DIR}/demonsouls.nacp
+			--icon=${CMAKE_SOURCE_DIR}/assets/icon.jpg --nacp=${CMAKE_BINARY_DIR}/demonsouls_game.nacp
+		DEPENDS demonsouls_game ${CMAKE_SOURCE_DIR}/assets/icon.jpg ${CMAKE_BINARY_DIR}/demonsouls_game.nacp
 		COMMENT "Building the game's NRO"
 		VERBATIM
 	)

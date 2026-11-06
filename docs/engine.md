@@ -106,7 +106,7 @@ builds as it is. Where it can go straight to Horizon:
 | cellPad | `libs/input` | libnx HID: Joy-Cons, Pro Controller | 7 |
 | cellPamf, cellSail (the movies: H.264 and ATRAC3plus) | `libs/codec` | FFmpeg 7.1 from devkitPro's portlibs | 11 |
 | cellFs, sys_fs | `runtime/ppu/ppu_fs.cpp` | `src/platform/nx_vfs.c` (stage 2) | done |
-| guest memory | `vm_base` | `src/platform/nx_guest.c` (stage 1) | done |
+| guest memory | `vm_base` | `src/platform/nx_guest.c` (stage 1), the game's commits and faults (stage 6) | done |
 | network (NP, sockets) | `libs/network` | libnx sockets | last |
 
 ## Checked on the console

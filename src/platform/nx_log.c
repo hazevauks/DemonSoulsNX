@@ -47,6 +47,13 @@ void nx_log_init(const char *version)
            nxlink_fd >= 0 ? "on" : "off");
 }
 
+void nx_log_capture_stdout(void)
+{
+    fflush(stdout);
+    dup2(STDERR_FILENO, STDOUT_FILENO);
+    setvbuf(stdout, NULL, _IONBF, 0);
+}
+
 void nx_log_shutdown(void)
 {
     fflush(stdout);
