@@ -82,7 +82,8 @@ The stage 3 test, the same day, on the same console:
 | A yield | 0.34 µs |
 | zlib inflating the game's DCX blocks on one core | 107 MB/s |
 
-The stage 5 test, 2026-11-06, on the same console, with a Switch controller:
+The stage 5 tests, 2026-11-06, on the same console, with a Switch controller (the second run
+timed the sound at larger buffers):
 
 | What | Result |
 | --- | --- |
@@ -94,13 +95,13 @@ The stage 5 test, 2026-11-06, on the same console, with a Switch controller:
 | Which button is SDL2's `a` | the Switch's **B**, the bottom one: switch-sdl2 maps by position (its mapping string is `a:b1,b:b0,x:b3,y:b2`, with button 0 the Switch's A), so cellPad's Cross is the bottom button, where the PS3 has it |
 | The sound device, opened as cellAudio opens it: 48 kHz, float, stereo, 256 frames a buffer | opens; the driver turns the float into 16-bit for the audio renderer |
 | Frames a second the device takes from the queue at 256 frames a buffer | **25,600, not 48,000**: one buffer every 10 ms, so the rest of each 10 ms is silence. switch-sdl2's driver keeps two buffers in the audio renderer and waits for each to start before it takes the next; a 5.3 ms buffer is shorter than that wait. cellAudio paces the game's audio clock on this rate, so it would run at about half speed |
+| The same at 512, 1024 and 2048 frames a buffer | 40,690, **48,091** and 47,866 a second: from 1024 frames (21.3 ms) a buffer the device keeps up, within the measurement's half a percent. Stage 7 opens SDL2 with 1024 frames on the Switch; cellAudio already allows a device buffer larger than its blocks |
 
 ## Not checked yet
 
-The sound at larger buffers. The test NRO now times the device with 256, 512, 1024 and 2048
-frames a buffer, and plays a tone at 256 and one at the smallest size that keeps up. If one keeps
-up, stage 7 opens SDL2 with it (cellAudio already allows a device buffer larger than its blocks);
-if none does, cellAudio gets its own audio renderer voice with more buffers in the queue.
+How late the sound is with 1024-frame buffers: two of them in the audio renderer (43 ms) and
+cellAudio's queue on top. Stage 7 measures it with the game's own sound; if it is too much,
+cellAudio gets its own audio renderer voice with more, smaller buffers in the queue.
 
 Which controller slots are connected: SDL2 lists all eight, and stage 7 has cellPad report only
 the ones in use.
@@ -125,9 +126,9 @@ leaves 64 KB pieces for stray touches; it will log how many pieces it maps.
 | 2. Asset packaging: paths, case, the file layer on Horizon, the decrypted inputs | **done**, checked on the PC and the console |
 | 3. Engine dependencies: RSX/libgcm to deko3D, PPU/SPU threads to the Switch's cores | **done** (docs/engine.md), checked on the console |
 | 4. The port's build: ps3recomp's runtime and the lifted game with devkitA64 and CMake | **done** (docs/build.md): the runtime, the host side and the lifted game build and link into the game's NRO, in 134 minutes on a 2-core laptop; it can start once stage 6 gives it guest memory |
-| 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | **in progress**: the libraries are declared and checked, the game links with all of them; on the console SDL2 and deko3D work together and every button reaches SDL2, but its sound at cellAudio's 256-frame buffers plays 25,600 frames a second; the next test times larger buffers |
+| 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | **done**: the libraries are declared and checked, the game links with all of them; on the console SDL2 and deko3D work together, every button reaches SDL2, and its sound keeps up from 1024 frames a buffer (cellAudio's 256 play at half rate) |
 | 6. POSIX layer, alignment, guest memory on the Switch's heap | to do |
-| 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | to do |
+| 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | to do: SDL2's sound with 1024 frames a buffer, cellPad reporting only the connected controllers |
 | 8. First boot of the game, with a fallback renderer | to do |
 | 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | started: the log exists |
 | 10. Crash triage: alignment faults, missing system calls, null pointers | to do |
