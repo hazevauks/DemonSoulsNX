@@ -151,6 +151,17 @@ The next run, 150 seconds, with Start pressed at about 40 seconds and Cross afte
 | Then | the title screen's movies: `movie/ds_advertise.pam`, then `movie/ds_title.pam`, each ending at once, as the runtime plays movies through FFmpeg, which this build has not got |
 | Guest memory and threads | 469 MB in 63 mappings, 44 faults, none refused; 2,004 detached threads given back, never more than 93 at once |
 
+The stage 9 test, the same day: the game's NRO sent with `tools/nxlink_run.py`, with
+`DES_SKIP_INTRO=1` in `settings.txt`:
+
+| What | Result |
+| --- | --- |
+| nxlink finding the console by itself | no: the router does not pass its broadcast. With the address the netloader shows (`--address`), yes |
+| The NRO sent | 173 MB as 56 MB over Wi-Fi, written to `switch/demonsouls/demonsouls_game.nro`, and started |
+| The live log | 3,619 lines, the runtime's with them, saved on the PC (`SD_LOG/nxlink_*.txt`); no stray bytes |
+| `settings.txt` | `settings: DES_SKIP_INTRO=1`, then `[des] DES_SKIP_INTRO=1: boot logos skipped` |
+| The game | the save of the run before found; at the title screen Start, ZL and Cross reached it, and its sound then played on, the loudest sample 0.30 to 0.38 in every 10 seconds to the end. 96 to 115 frames every 10 seconds, the log going to the network |
+
 ## Not checked yet
 
 How late the sound is with 1024-frame buffers: two of them in the audio renderer (43 ms) and
@@ -203,7 +214,7 @@ PS3 gives 30. Stages 16 and 17.
 | 6. POSIX layer, alignment, guest memory on the Switch's heap | **done**: the game's NRO starts, its boot runs on guest memory (467 MB, 61 mappings, nothing refused) and creates the game's 22 PPU threads on capped host stacks |
 | 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | **done**: the game's mixer runs at 48,000 frames a second on SDL2 with 1024-frame buffers; cellPad gets only the slots with a controller, and the buttons reach the game in the PS3's positions. Checked in handheld mode; a Pro Controller and detached Joy-Cons take the same way and have not been on the console |
 | 8. First boot of the game, with a fallback renderer | **done**: on the null renderer the game boots to its title screen and runs its loop at about 11 frames a second, with its sound; Start and Cross reach it, it makes its save and plays its menu sounds. Nothing is drawn on the screen until the deko3D renderer (stage 12), and the movies need FFmpeg |
-| 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | **in progress**: the logs in `SD_LOG`, whole and readable; `tools/nxlink_run.py` sends an NRO to its place on the SD card and keeps its live log; `settings.txt` sets the runtime's options; `tools/summarize_log.py` sums a log up. nxlink and the settings wait for a console test |
+| 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | **done**: the logs in `SD_LOG`, whole and readable; `tools/nxlink_run.py` sends an NRO to its place on the SD card and keeps its live log on the PC; `settings.txt` sets the runtime's options; `tools/summarize_log.py` sums a log up |
 | 10. Crash triage: alignment faults, missing system calls, null pointers | to do |
 | 11. Asset loading: archives, materials, shaders, streaming | to do |
 | 12. Native deko3D renderer | to do |

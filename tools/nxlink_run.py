@@ -6,8 +6,9 @@
 On the console: start the homebrew menu by title takeover (hold R while starting a game), and
 press Y there, for its netloader. The game's NRO goes by default, the test NRO with --test. It is
 written where it lives on the SD card (switch/demonsouls/), so the menu starts the new one from
-then on, and it starts at once. nxlink finds the console on the network by itself; --address names
-it when it does not.
+then on, and it starts at once. nxlink looks for the console with a broadcast, which many routers do
+not pass between devices ("No response from Switch!"): --address then names it, as the netloader's
+screen shows it.
 
 What the NRO prints comes back over the network: shown here, and saved to
 SD_LOG/nxlink_<date>_<name>.txt. The run ends when the NRO exits, or with Ctrl+C here. The NRO

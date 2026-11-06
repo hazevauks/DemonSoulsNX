@@ -52,9 +52,15 @@ python tools/nxlink_run.py
 It sends the game's NRO (`--test` for the test NRO) to where it lives on the SD card,
 `switch/demonsouls/`, so the homebrew menu starts the new one from then on, and starts it. The log
 is shown and saved to `SD_LOG/nxlink_<date>_<name>.txt` until the NRO exits or the console closes it.
-nxlink finds the console by itself; `--address` names it when it does not. Windows asks once to let
-nxlink through its firewall, which the log needs. The game's NRO is 173 MB: it takes a minute or two
-over Wi-Fi.
+nxlink looks for the console with a broadcast, which many routers do not pass from one device to
+another ("No response from Switch!"); then name it with the address the netloader's screen shows:
+
+```bash
+python tools/nxlink_run.py --address 192.168.1.12
+```
+
+Windows asks once to let nxlink through its firewall, which the log needs. The game's NRO is 173 MB,
+56 MB as nxlink sends it: about a minute over Wi-Fi.
 
 The NRO's own log on the SD card is written as well. With nxlink the game's runtime prints to the
 network only, so the PC's copy is the whole one.
