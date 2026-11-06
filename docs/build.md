@@ -147,7 +147,27 @@ grows. libnx takes a thread's whole stack from the heap at once, so twenty threa
 console's memory. With `-Wl,--wrap=pthread_attr_setstacksize`, a host stack above 16 MB gets 16 MB,
 what the runtime gives SPU threads anyway; the log says how many threads and how much memory.
 
-Neither needs a change to a vendored file, and both are link options: nothing compiles again.
+The game's sound and controls go through SDL2 as on a PC, with two differences the Switch's SDL2
+needs, in `src/platform/nx_game_sdl.c`, again by `--wrap`:
+
+- `SDL_OpenAudioDevice`: cellAudio asks for 256 frames a buffer, the PS3's block. switch-sdl2's
+  driver plays that at 25,600 frames a second, and cellAudio paces the game's audio clock on what
+  the device takes; from 1024 frames it keeps up (stage 5), so the device gets 1024.
+  `SDL_QueueAudio` is counted on the way: the log gives, every 10 seconds, the frames a second the
+  game's mixer queues, its loudest sample, and what is waiting.
+- `SDL_IsGameController`, `SDL_GameControllerGetAttached`: switch-sdl2 lists a controller for each
+  of the console's eight slots, filled or not, and cellPad would report each to the game as a
+  connected pad. Only a slot with a controller in it counts. The first is player 1 together with
+  the Joy-Cons in handheld mode, so the console in hand, a Pro Controller or a pair of Joy-Cons is
+  the game's port 0. `SDL_GameControllerOpen`, `GetButton` and `GetAxis` log which controller is in
+  which slot, and each button the first time it reaches the game.
+
+The buttons are by position, as cellPad maps them and as the PS3's are: B is Cross, A Circle,
+Y Square, X Triangle, L and R are L1 and R1, ZL and ZR are L2 and R2, minus and plus are Select and
+Start. The runtime's `PAD_MAP` could swap them.
+
+None of this needs a change to a vendored file, and all of it is link options: nothing compiles
+again.
 
 ## The game's code
 

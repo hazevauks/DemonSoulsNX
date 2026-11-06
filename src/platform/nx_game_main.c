@@ -29,6 +29,7 @@
 
 #include "../hos/hos_guest.h"
 #include "nx_data.h"
+#include "nx_game_sdl.h"
 #include "nx_guest.h"
 #include "nx_log.h"
 #include "nx_paths.h"
@@ -121,7 +122,8 @@ static void at_exit(void)
     fflush(stdout);
 }
 
-/* Every 10 seconds, while it changes: a game that hangs or crashes never reaches the exit. */
+/* Every 10 seconds: the sound, and guest memory while it changes. A game that hangs or crashes
+ * never reaches the exit. */
 static void *watch_thread(void *arg)
 {
     (void)arg;
@@ -129,6 +131,7 @@ static void *watch_thread(void *arg)
     unsigned last_threads = 0;
     for (unsigned seconds = 10;; seconds += 10) {
         svcSleepThread(10ull * 1000 * 1000 * 1000);
+        nx_game_sdl_report();
         NxGuestStats now;
         nx_guest_stats(&now);
         if (!now.window)

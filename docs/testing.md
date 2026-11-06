@@ -91,3 +91,10 @@ mapped, in how many pieces, how many faults were answered, and the threads' host
 them come the boot's own lines (`[boot]`, `[boot-dbg]`, `[SYS]` and the like), as far as the game
 gets. Give it a minute; if it does not end by itself, close it from the HOME menu, and copy the
 log.
+
+Stage 7 adds the sound and the controls. The game starts reading its pad before the point where it
+stops for now (about 20 seconds in), so press every button once as soon as the screen goes black: B, A, Y, X, L, R, ZL, ZR, minus, both sticks pressed in and moved, the d-pad, and plus last
+(the game's Start). Each `controls:` line names a button the first time it reached the game, with
+the PS3 button the game got, and which controller is in which slot. The `sound:` lines, every 10
+seconds, give the frames a second the game's mixer queued (48,000 is right), its loudest sample
+(above 0 means the game played something), and how much was waiting.

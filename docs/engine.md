@@ -102,8 +102,8 @@ builds as it is. Where it can go straight to Horizon:
 
 | PS3 library | ps3recomp | On the Switch | Stage |
 | --- | --- | --- | --- |
-| cellAudio (the game's own mixer runs on top) | `libs/audio` | audren, or SDL2's audio | 7 |
-| cellPad | `libs/input` | libnx HID: Joy-Cons, Pro Controller | 7 |
+| cellAudio (the game's own mixer runs on top) | `libs/audio` | SDL2's audio (switch-sdl2 over audren), with 1024-frame device buffers (`src/platform/nx_game_sdl.c`) | 7 |
+| cellPad | `libs/input` | SDL2's game controllers (switch-sdl2 over libnx HID): handheld, Joy-Cons, Pro Controller; only the slots with a controller in them | 7 |
 | cellPamf, cellSail (the movies: H.264 and ATRAC3plus) | `libs/codec` | FFmpeg 7.1 from devkitPro's portlibs | 11 |
 | cellFs, sys_fs | `runtime/ppu/ppu_fs.cpp` | `src/platform/nx_vfs.c` (stage 2) | done |
 | guest memory | `vm_base` | `src/platform/nx_guest.c` (stage 1), the game's commits and faults (stage 6) | done |

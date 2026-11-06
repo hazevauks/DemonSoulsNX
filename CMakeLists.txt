@@ -122,6 +122,7 @@ if(DESNX_RUNTIME AND DESNX_HOST)
 		${SOULBRANDT_PORT}/des_ui_stub.cpp      # no launcher UI: Soulbrandt's own build without it
 		${CMAKE_SOURCE_DIR}/src/platform/nx_port_glue.c
 		${CMAKE_SOURCE_DIR}/src/platform/nx_game_main.c   # the Switch's start, before the boot's main
+		${CMAKE_SOURCE_DIR}/src/platform/nx_game_sdl.c    # the game's sound and controls through SDL2
 	)
 	set_property(SOURCE ${CMAKE_SOURCE_DIR}/src/platform/nx_game_main.c
 		APPEND PROPERTY COMPILE_DEFINITIONS DESNX_VERSION="${PROJECT_VERSION}")
@@ -206,9 +207,13 @@ if(TARGET desnx_host AND DESNX_PPU_CHUNKS)
 	target_compile_definitions(demonsouls_game PRIVATE _GNU_SOURCE DS_NO_SHADOW_STACK)
 	target_link_libraries(demonsouls_game PRIVATE desnx_host desnx_platform nx m)
 	# libnx's start code calls nx_game_main.c's __wrap_main, which sets up the Switch and then runs
-	# the boot's main; and host stacks are capped at 16 MB, as libnx takes a whole stack from the heap
+	# the boot's main; and host stacks are capped at 16 MB, as libnx takes a whole stack from the heap.
+	# nx_game_sdl.c: cellAudio's device buffer and cellPad's controllers, as the Switch's SDL2 needs
 	target_link_options(demonsouls_game PRIVATE -Wl,-Map=${CMAKE_BINARY_DIR}/demonsouls_game.map -Wl,--gc-sections
-		-Wl,--wrap=main -Wl,--wrap=pthread_attr_setstacksize)
+		-Wl,--wrap=main -Wl,--wrap=pthread_attr_setstacksize
+		-Wl,--wrap=SDL_OpenAudioDevice -Wl,--wrap=SDL_QueueAudio
+		-Wl,--wrap=SDL_IsGameController -Wl,--wrap=SDL_GameControllerOpen -Wl,--wrap=SDL_GameControllerGetAttached
+		-Wl,--wrap=SDL_GameControllerGetButton -Wl,--wrap=SDL_GameControllerGetAxis)
 	# Hours to compile on a laptop, so only on request: cmake --build build --target demonsouls_game_nro
 	# (nx_create_nro would put it in every build).
 	set_target_properties(demonsouls_game PROPERTIES EXCLUDE_FROM_ALL ON)
