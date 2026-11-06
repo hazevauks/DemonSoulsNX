@@ -48,6 +48,74 @@ uint32_t g_spurs_exitcode_ea = 0;
 #endif
 
 /* ---------------------------------------------------------------------------
+ * DemonSoulsNX: the last SPURS events, for a wait that never ends.
+ *
+ * The job chain and event flag logs here stop after their first few lines, so
+ * a wait that blocks a minute into a run shows nothing of what led to it.
+ * These calls note each event in a ring of the last SPT_N, and the first PPU
+ * wait that blocks for a second prints from it, once, the chain events (runs,
+ * walks, jobs, shutdowns, joins) and those of the flag it waits on (sets,
+ * clears, waits, and the SPU's atomic writes to its line). Other flags are
+ * left out: the sound's is set every 5 ms. Cheap enough to stay on.
+ * -----------------------------------------------------------------------*/
+#define SPT_N 4096
+#define SPT_SHOWN 300
+static struct {
+    long long t;          /* QueryPerformanceCounter */
+    unsigned long tid;
+    const char* what;
+    uint32_t a, b, c;
+} s_spt[SPT_N];
+static volatile long s_spt_n;
+
+static void spt(const char* what, uint32_t a, uint32_t b, uint32_t c)
+{
+    const long i = _InterlockedIncrement(&s_spt_n) - 1;
+    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+    s_spt[i % SPT_N].t = now.QuadPart;
+    s_spt[i % SPT_N].tid = (unsigned long)GetCurrentThreadId();
+    s_spt[i % SPT_N].what = what;
+    s_spt[i % SPT_N].a = a;
+    s_spt[i % SPT_N].b = b;
+    s_spt[i % SPT_N].c = c;
+}
+
+static void jc_dump_states(void);
+
+/* A flag's events are named "ppu ef ..." and "spu ef ...", with the flag first. */
+static int spt_shown(long k, uint32_t ea)
+{
+    const char* w = s_spt[k].what;
+    if (!w) return 0;
+    if ((w[0] == 'p' || w[0] == 's') && w[1] == 'p' && w[2] == 'u' && w[3] == ' ' && w[4] == 'e' && w[5] == 'f')
+        return s_spt[k].a == ea;
+    return 1;
+}
+
+static void spt_dump(const char* why, uint32_t ea)
+{
+    static volatile long s_once = 0;
+    if (_InterlockedExchange(&s_once, 1)) return;
+    const long n = s_spt_n;
+    const long oldest = n > SPT_N ? n - SPT_N : 0;
+    long first = n, shown = 0;
+    while (first > oldest && shown < SPT_SHOWN)
+        if (spt_shown(--first % SPT_N, ea)) shown++;
+    LARGE_INTEGER now, f; QueryPerformanceCounter(&now); QueryPerformanceFrequency(&f);
+    fprintf(stderr, "[spurs-trace] %s 0x%08X: its and the job chains' last %ld of %ld SPURS events, "
+            "ms before now\n", why, ea, shown, n);
+    for (long i = first; i < n; i++) {
+        const long k = i % SPT_N;
+        if (!spt_shown(k, ea)) continue;
+        fprintf(stderr, "[spurs-trace] -%8.2f tid=%lu %-12s %08X %08X %08X\n",
+                (double)(now.QuadPart - s_spt[k].t) * 1000.0 / (double)f.QuadPart, s_spt[k].tid,
+                s_spt[k].what, s_spt[k].a, s_spt[k].b, s_spt[k].c);
+    }
+    jc_dump_states();
+    fflush(stderr);
+}
+
+/* ---------------------------------------------------------------------------
  * Internal workload tracking
  * -----------------------------------------------------------------------*/
 
@@ -119,10 +187,12 @@ static EventFlagSync s_ef_sync[MAX_EVENT_FLAGS];
 static volatile long s_ef_ppu_waiters;
 static void ef_line_committed(uint32_t line)
 {
-    if (!s_ef_ppu_waiters) return;
     for (int i = 0; i < MAX_EVENT_FLAGS; i++) {
         EventFlagSync* s = &s_ef_sync[i];
         if (!s->initialized || (s->ea & ~127u) != line) continue;
+        /* DemonSoulsNX: the SPU's atomic write to the flag, and the bits after it */
+        spt("spu ef write", s->ea, (uint32_t)((vm_base[s->ea] << 8) | vm_base[s->ea + 1]), 0);
+        if (!s_ef_ppu_waiters) continue;
         /* Take the waiter's lock so the wake cannot fall between its check of
          * the flag and its sleep. Caller holds no lock-line lock. */
 #ifdef _WIN32
@@ -401,6 +471,7 @@ void spurs_ef_set_from_spu(uint32_t flag_ea, uint16_t bits)
     if (!sync) return;
     ef_lock(sync);
     spurs_ef_set_locked(flag_ea, (u16)bits);
+    spt("spu ef set", flag_ea, bits, ef_r16(flag_ea + EF_EVENTS));   /* DemonSoulsNX */
     ef_broadcast(sync);
     ef_unlock(sync);
 }
@@ -2175,6 +2246,7 @@ s32 cellSpursEventFlagSet(CellSpursEventFlag* eventFlag, u16 bits)
 
     ef_lock(sync);
     spurs_ef_set_locked(ea, bits);
+    spt("ppu ef set", ea, bits, ef_r16(ea + EF_EVENTS));   /* DemonSoulsNX */
     ef_broadcast(sync);
     ef_unlock(sync);
 
@@ -2239,6 +2311,7 @@ s32 cellSpursEventFlagWait(CellSpursEventFlag* eventFlag, u16* bits,
     u16 current;
     __atomic_add_fetch(&s_ef_ppu_waiters, 1, __ATOMIC_SEQ_CST);
     LARGE_INTEGER ef_t0; QueryPerformanceCounter(&ef_t0);
+    spt("ppu ef wait", ea, pattern, vm_read16(ea + EF_EVENTS));   /* DemonSoulsNX */
     for (;;) {
         current = vm_read16(ea + EF_EVENTS);
 
@@ -2254,6 +2327,7 @@ s32 cellSpursEventFlagWait(CellSpursEventFlag* eventFlag, u16* bits,
         if (!ef_wait_timed(sync, 2)) {
             /* Report the stall once per second, naming what would have to run. */
             if (++waits % 500 == 0) {
+                if (waits == 500) spt_dump("a PPU wait blocked a second on", ea);   /* DemonSoulsNX */
                 static int _n = 0;
                 if (_n < 24) { _n++;
                     fprintf(stderr, "[cellSpurs] EventFlagWait BLOCKED tid=%lu %us on pattern 0x%04X "
@@ -2274,6 +2348,7 @@ s32 cellSpursEventFlagWait(CellSpursEventFlag* eventFlag, u16* bits,
     }
 
     __atomic_sub_fetch(&s_ef_ppu_waiters, 1, __ATOMIC_SEQ_CST);
+    spt("ppu ef woke", ea, pattern, current);   /* DemonSoulsNX */
     ef_wait_stats(ea, ef_t0.QuadPart);
     /* Hand back the observed bits; consume the received ones on AUTO clear. */
     vm_write16(bits_ea, current);
@@ -2352,6 +2427,7 @@ s32 cellSpursEventFlagClear(CellSpursEventFlag* eventFlag, u16 bits)
 
     ef_lock(sync);
     ef_line_begin(ea);
+    spt("ppu ef clear", ea, bits, ef_r16(ea + EF_EVENTS));   /* DemonSoulsNX: the bits before */
     ef_w16(ea + EF_EVENTS, (u16)(ef_r16(ea + EF_EVENTS) & ~bits));
     ef_line_end(ea);
     ef_unlock(sync);
@@ -2503,6 +2579,7 @@ static s32 jc_register(u32 jc_ea, u32 entry_ea, u16 size_desc, u16 max_grab,
             s_jobchains[i].size_desc = size_desc;
             s_jobchains[i].max_grab  = max_grab;
             s_jobchains[i].run_count = 0;
+            spt("create", jc_ea, entry_ea, (uint32_t)s_jobchains[i].running);   /* DemonSoulsNX */
             return CELL_OK;
         }
     }
@@ -2606,6 +2683,7 @@ static void jc_run_one_job(u32 job_ea, int idx, u32 size_desc)
     u32 ea_bin     = (u32)(ea_bin_raw & ~7ull);          /* low 3 bits = flags */
     u32 size_bin   = ((vm_read32(job_ea + JH_SIZE_BINARY) >> 16) & 0xFFFFu) << 4;
     u8  job_type   = *(vm_base + job_ea + JH_JOB_TYPE);
+    spt("job", job_ea, ea_bin, size_bin);   /* DemonSoulsNX */
 
     { static int _n = 0;
       if (_n < 8) {
@@ -2980,8 +3058,10 @@ static DWORD WINAPI jc_thread(LPVOID p)
     { const char* d = getenv("SPURS_JC_DELAY");
       if (d && *d) Sleep((unsigned)atoi(d)); }
     for (;;) {
+        spt("walk", s_jobchains[slot].jc_ea, (uint32_t)id, s_jobchains[slot].entry_ea);
         jc_execute(s_jobchains[slot].entry_ea, s_jobchains[slot].jc_ea,
                    s_jobchains[slot].size_desc);
+        spt("walk end", s_jobchains[slot].jc_ea, (uint32_t)id, (uint32_t)s_jobchains[slot].walker);
         if (s_jobchains[slot].walker != id) {          /* shut down while walked */
             jc_signal_done(s_jobchains[slot].jc_ea, -1);
             return 0;
@@ -3033,6 +3113,7 @@ static s32 jc_start(u64 jc_ea, const char* who)
          * walker walks it once more (DemonSoulsNX, above jc_thread). */
         if (_InterlockedCompareExchange(&s_jobchains[i].running, 1, 0) == 0) {
             const long id = _InterlockedIncrement(&s_jobchains[i].walker);
+            spt(who[0] == 'K' ? "kick" : "run", (u32)jc_ea, (uint32_t)id, (uint32_t)s_jobchains[i].run_count);
             s_jobchains[i].pending = 0;
             HANDLE th = CreateThread(NULL, 1u << 20, jc_thread,
                                      (LPVOID)(intptr_t)(i + (intptr_t)MAX_JOBCHAINS * id), 0, NULL);
@@ -3040,6 +3121,8 @@ static s32 jc_start(u64 jc_ea, const char* who)
             else s_jobchains[i].running = 0;
         } else {
             _InterlockedExchange(&s_jobchains[i].pending, 1);
+            spt(who[0] == 'K' ? "kick again" : "run again", (u32)jc_ea, (uint32_t)s_jobchains[i].walker,
+                (uint32_t)s_jobchains[i].run_count);
             static long s_again = 0;
             const long n = _InterlockedIncrement(&s_again);
             if (n <= 8 || n % 100 == 0)
@@ -3076,6 +3159,7 @@ s32 cellSpursShutdownJobChain(u64 jc_ea)
     if (_n < 8 && ++_n) printf("[cellSpurs] ShutdownJobChain(jc=0x%08X)\n", (u32)jc_ea);
     for (int i = 0; i < MAX_JOBCHAINS; i++) {
         if (s_jobchains[i].jc_ea == (u32)jc_ea) {
+            spt("shutdown", (u32)jc_ea, (uint32_t)s_jobchains[i].walker, (uint32_t)s_jobchains[i].running);
             _InterlockedIncrement(&s_jobchains[i].walker);   /* DemonSoulsNX: retire the walk */
             s_jobchains[i].pending = 0;
             s_jobchains[i].running = 0;   /* stop the walker; Join can now succeed */
@@ -3099,6 +3183,7 @@ s32 cellSpursJoinJobChain(u64 jc_ea)
      * (black frames, glyph quads built from half-written vertices), and the
      * next frame's Run was coalesced away while this walker was still busy,
      * so that frame's data was never written at all. */
+    spt("join", (u32)jc_ea, 0, 0);   /* DemonSoulsNX */
     for (int i = 0; i < MAX_JOBCHAINS; i++) {
         if (s_jobchains[i].jc_ea != (u32)jc_ea) continue;
         while (s_jobchains[i].running) {
@@ -3109,7 +3194,19 @@ s32 cellSpursJoinJobChain(u64 jc_ea)
 #endif
         }
     }
+    spt("joined", (u32)jc_ea, 0, 0);
     return CELL_OK;
+}
+
+/* DemonSoulsNX: each known chain's state, with the SPURS trace (spt_dump). */
+static void jc_dump_states(void)
+{
+    for (int i = 0; i < MAX_JOBCHAINS; i++)
+        if (s_jobchains[i].jc_ea)
+            fprintf(stderr, "[spurs-trace] chain 0x%08X entry 0x%08X: running %ld, pending %ld, walk %ld, "
+                    "runs since its Create %d\n", s_jobchains[i].jc_ea, s_jobchains[i].entry_ea,
+                    (long)s_jobchains[i].running, (long)s_jobchains[i].pending, (long)s_jobchains[i].walker,
+                    s_jobchains[i].run_count);
 }
 
 s32 cellSpursJobChainGetError(u64 jc_ea, u64 cause_out_ea)
