@@ -2435,6 +2435,8 @@ static struct {
     u16 max_grab;
     int run_count;
     volatile long running;   /* 1 while a host thread walks this chain */
+    volatile long pending;   /* DemonSoulsNX: a Run/Kick came in while it was being walked */
+    volatile long walker;    /* DemonSoulsNX: the walk that owns `running` (Shutdown retires it) */
 } s_jobchains[MAX_JOBCHAINS];
 
 static void jc_dump_commands(const char* tag, u32 ea, int max_words)
@@ -2953,9 +2955,23 @@ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
            jc_ea, jobs);
 }
 
+/* DemonSoulsNX: a Run or Kick that arrives while the chain is being walked is
+ * one more walk, not none. It used to be coalesced away. Demon's Souls uploads
+ * its textures through one chain, again and again: run it, wait on the flag its
+ * last job sets, and run it again. On the Switch the walker that set the flag
+ * can still be finishing its walk (its completion events, the END) when the
+ * game asks for the next run -- the kernel shares three cores between the
+ * game's threads 10 ms at a time -- and that run was dropped: HighGraphics then
+ * waited for the flag forever, 10 to 20 seconds into the boot. So the start is
+ * remembered (`pending`), and the walker walks the chain again when it is done.
+ *
+ * Shutdown retires the walk in progress (`walker`): it may go on to its END,
+ * but then it leaves `running` alone, as the chain's next run may own it by
+ * then, and a start it did not see is that run's. */
 static DWORD WINAPI jc_thread(LPVOID p)
 {
-    int slot = (int)(intptr_t)p;
+    const int slot = (int)((intptr_t)p % MAX_JOBCHAINS);
+    const long id = (long)((intptr_t)p / MAX_JOBCHAINS);
     /* TIMING PROBE (SPURS_JC_DELAY=ms): the real jm2 chain walker is async and
      * picks up jobs as the PPU appends them + fills their descriptors. Our walk
      * is one-shot; if it reads descriptors before the PPU populates the I/O
@@ -2963,13 +2979,26 @@ static DWORD WINAPI jc_thread(LPVOID p)
      * Confirms timing-vs-never before committing to the async rewrite. */
     { const char* d = getenv("SPURS_JC_DELAY");
       if (d && *d) Sleep((unsigned)atoi(d)); }
-    jc_execute(s_jobchains[slot].entry_ea, s_jobchains[slot].jc_ea,
-               s_jobchains[slot].size_desc);
-    s_jobchains[slot].running = 0;
-    /* Tell the application the chain is done. Without this the walk finishes
-     * in silence and a thread waiting on the attached queue never runs again. */
-    jc_signal_done(s_jobchains[slot].jc_ea, -1);
-    return 0;
+    for (;;) {
+        jc_execute(s_jobchains[slot].entry_ea, s_jobchains[slot].jc_ea,
+                   s_jobchains[slot].size_desc);
+        if (s_jobchains[slot].walker != id) {          /* shut down while walked */
+            jc_signal_done(s_jobchains[slot].jc_ea, -1);
+            return 0;
+        }
+        if (_InterlockedExchange(&s_jobchains[slot].pending, 0)) {   /* started again meanwhile */
+            jc_signal_done(s_jobchains[slot].jc_ea, -1);
+            continue;
+        }
+        s_jobchains[slot].running = 0;
+        /* Tell the application the chain is done. Without this the walk finishes
+         * in silence and a thread waiting on the attached queue never runs again. */
+        jc_signal_done(s_jobchains[slot].jc_ea, -1);
+        /* A start that still found the chain running, just before the line above. */
+        if (!_InterlockedExchange(&s_jobchains[slot].pending, 0) ||
+            _InterlockedCompareExchange(&s_jobchains[slot].running, 1, 0) != 0)
+            return 0;
+    }
 }
 
 /* cellSpursRunJobChain -- start job chain execution (async, like the real one). */
@@ -3000,11 +3029,22 @@ static s32 jc_start(u64 jc_ea, const char* who)
             jc_dump_commands(who, s_jobchains[i].entry_ea, 16);
         }
         if (s_off || !s_jobchains[i].entry_ea) return CELL_OK;
-        /* Coalesce: a chain already being walked must not start twice. */
+        /* Coalesce: a chain already being walked must not start twice -- but its
+         * walker walks it once more (DemonSoulsNX, above jc_thread). */
         if (_InterlockedCompareExchange(&s_jobchains[i].running, 1, 0) == 0) {
-            HANDLE th = CreateThread(NULL, 1u << 20, jc_thread, (LPVOID)(intptr_t)i, 0, NULL);
+            const long id = _InterlockedIncrement(&s_jobchains[i].walker);
+            s_jobchains[i].pending = 0;
+            HANDLE th = CreateThread(NULL, 1u << 20, jc_thread,
+                                     (LPVOID)(intptr_t)(i + (intptr_t)MAX_JOBCHAINS * id), 0, NULL);
             if (th) CloseHandle(th);
             else s_jobchains[i].running = 0;
+        } else {
+            _InterlockedExchange(&s_jobchains[i].pending, 1);
+            static long s_again = 0;
+            const long n = _InterlockedIncrement(&s_again);
+            if (n <= 8 || n % 100 == 0)
+                printf("[cellSpurs] %s(jc=0x%08X) while it is being walked: it walks again after (%ld so far)\n",
+                       who, (u32)jc_ea, n);
         }
         return CELL_OK;
     }
@@ -3036,6 +3076,8 @@ s32 cellSpursShutdownJobChain(u64 jc_ea)
     if (_n < 8 && ++_n) printf("[cellSpurs] ShutdownJobChain(jc=0x%08X)\n", (u32)jc_ea);
     for (int i = 0; i < MAX_JOBCHAINS; i++) {
         if (s_jobchains[i].jc_ea == (u32)jc_ea) {
+            _InterlockedIncrement(&s_jobchains[i].walker);   /* DemonSoulsNX: retire the walk */
+            s_jobchains[i].pending = 0;
             s_jobchains[i].running = 0;   /* stop the walker; Join can now succeed */
             return CELL_OK;
         }

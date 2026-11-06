@@ -24,6 +24,7 @@ SDATA/EDAT and PKG keys, and its history once held decrypted firmware; neither i
 | removed `ps3recomp/scratch/`, `ps3recomp/.github/`, `soulbrandt/.github/`, `soulbrandt/.claude/`, `soulbrandt/.trail/` | notes and CI of the original projects, with paths from their authors' machines |
 | `ps3recomp/runtime/platform/win32_compat.c`: on `__SWITCH__`, `SuspendThread` fails instead of parking the thread with a signal, and vectored exception handlers are registered without installing signal handlers | Horizon has no signals (docs/build.md) |
 | `ps3recomp/runtime/ppu/ppu_loader.cpp`: on `__SWITCH__`, the stray guest pointer trap arms nothing | the same |
+| `ps3recomp/libs/spurs/cellSpurs.c`: a job chain's Run or Kick that arrives while the chain is being walked makes the walker walk it again, instead of being dropped, and Shutdown retires the walk in progress | Demon's Souls runs its texture chain again as soon as the last job's flag is set; on the Switch the walker is often still finishing then, the run was dropped, and the game waited for the flag forever (docs/status.md) |
 
 Changes made for the Switch are marked `DemonSoulsNX` in the code. Everything else the runtime needs
 from Horizon comes from `src/hos/`, outside these folders.
