@@ -18,7 +18,9 @@ What has been checked, and how. Nothing here counts as working until a console h
 | Your decrypted inputs: `EBOOT.elf` as Soulbrandt's hash, libsre 4.93 as 4.86 once its version is set back | `tools/check_inputs.py` |
 | The lift: 94,017 PPU functions in 57 chunks, 12 SPU images and 2 jobs by fingerprint, libsre's 756 functions with its TOC | ps3recomp's and Soulbrandt's tools, docs/build.md |
 | The host side builds for Horizon: the boot scaffold, the HLE NID table (1,261 handlers), Soulbrandt's game code; linked whole with the runtime, only the lift's own symbols are missing | `./build.sh`, docs/build.md |
-| The game builds for Horizon: the 57 lifted chunks, the SPU programs and libsre compile with devkitA64 and link with the host side, the runtime and the platform layer, with no symbol missing, into a 166 MB NRO (156 MB of code); it starts at stage 6 | `cmake --build build --target demonsouls_game_nro`, docs/build.md |
+| The game builds for Horizon: the 57 lifted chunks, the SPU programs and libsre compile with devkitA64 and link with the host side, the runtime, the platform layer and the libraries, with no symbol missing, into a 173 MB NRO (161 MB of code); it starts at stage 6 | `cmake --build build --target demonsouls_game_nro`, docs/build.md |
+| The game's NRO holds the HLE NID table (its 1,261 handlers registered) and all of Soulbrandt's host files: the host side links as objects, as `des_boot` does | `nm`: `ppu_hle_register_all` is the table's, `cellPadGetData` and `cellAudioInit` are in |
+| The libraries are declared in one place and their versions checked at configure time: libnx 4.12.0, deko3D 0.5.0, SDL2 2.28.5 (with Mesa 20.1.0, never started), zlib 1.3.1 | `cmake/desnx_libraries.cmake`, docs/build.md |
 | Every compressed file inflates: 3,600 DCX and DCP files, 1,750 MB to 3,067 MB | `tools/check_archives.py` |
 | 3,585 raw files are byte for byte their `.dcx` (3.01 GB); 3 differ | `tools/check_archives.py` |
 | The 26 encrypted scripts are on the disc unencrypted too, with the bytes decrypting gives | `tools/check_inputs.py`, against Soulbrandt's hashes |
@@ -102,7 +104,7 @@ leaves 64 KB pieces for stray touches; it will log how many pieces it maps.
 | 2. Asset packaging: paths, case, the file layer on Horizon, the decrypted inputs | **done**, checked on the PC and the console |
 | 3. Engine dependencies: RSX/libgcm to deko3D, PPU/SPU threads to the Switch's cores | **done** (docs/engine.md), checked on the console |
 | 4. The port's build: ps3recomp's runtime and the lifted game with devkitA64 and CMake | **done** (docs/build.md): the runtime, the host side and the lifted game build and link into the game's NRO, in 134 minutes on a 2-core laptop; it can start once stage 6 gives it guest memory |
-| 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | to do |
+| 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | **in progress**: the libraries are declared and checked, the game links with all of them; the test NRO's SDL2 check (controllers and sound, beside deko3D) waits for a console test |
 | 6. POSIX layer, alignment, guest memory on the Switch's heap | to do |
 | 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | to do |
 | 8. First boot of the game, with a fallback renderer | to do |

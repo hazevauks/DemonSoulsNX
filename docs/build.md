@@ -7,10 +7,44 @@ things today:
 | --- | --- | --- |
 | `build/demonsouls.nro` | `src/` | the test NRO of stages 1 to 3 |
 | `build/third_party/ps3recomp/libps3recomp_runtime.a` | `third_party/ps3recomp`, built by its own CMake | builds for Horizon: all 307 sources |
-| `build/libdesnx_host.a` | ps3recomp's boot scaffold, the HLE NID table, Soulbrandt's game code | builds for Horizon: everything Soulbrandt's `des_boot` holds but the lifted code |
+| `desnx_host`, objects in `build/CMakeFiles/desnx_host.dir` | ps3recomp's boot scaffold, the HLE NID table, Soulbrandt's game code | builds for Horizon: everything Soulbrandt's `des_boot` holds but the lifted code |
 
 The game itself joins in two more steps, below. Nothing built from the game ever goes in this
 repository, or in a release.
+
+## The toolchain and the libraries
+
+Stage 5. `build.sh` configures with devkitPro's own CMake wrapper (`aarch64-none-elf-cmake`), and
+the top `CMakeLists.txt` takes devkitPro's toolchain file (`$DEVKITPRO/cmake/Switch.cmake`) when
+none is given: devkitA64's GCC, the Switch's CPU flags, libnx, and portlibs on the search path.
+Everything the port links against is declared in one place, `cmake/desnx_libraries.cmake`, as
+`desnx::libraries`, for the test NRO and the game alike:
+
+| Library | Package, as tested | For |
+| --- | --- | --- |
+| libnx | libnx 4.12.0 | the system: services, threads, memory, the window, the start code |
+| deko3D | deko3d 0.5.0, with uam 1.1.0 for shaders | the GPU: the renderer (stage 12) |
+| SDL2 | switch-sdl2 2.28.5 | game controllers and sound, for the runtime's cellPad and cellAudio |
+| Mesa | switch-mesa 20.1.0 | nothing: SDL2's video brings it in, and it is never started, as deko3D owns the window. 5 MB of the game's NRO |
+| zlib | switch-zlib 1.3.1 | the game's DCX and DCP archives, and the runtime |
+| | devkitA64 r30, switch-tools 1.13.1 | the compiler; `elf2nro` and `nacptool` |
+
+OpenAL Soft is installed but not linked: the runtime's cellAudio plays through SDL2 (stage 7).
+
+At configure time each package's version is read from devkitPro's package database, the MSYS2
+one on Windows or dkp-pacman's on Linux, and printed (`devkitPro packages: ...`). One older than the
+table is a warning, as it may lack what the port uses; a newer one is noted, as it has not been on a
+console yet.
+
+The libraries' headers stay the platform layer's own (`PRIVATE`), and only their linking reaches the
+game. Their include folders would otherwise join every lifted chunk's command line, and ninja
+compiles an object again when its command line changes: hours for the chunks. Before building the
+game after a change to the build, `tools/check_rebuild.py`, from the devkitPro shell, says what would
+compile again:
+
+```bash
+python tools/check_rebuild.py
+```
 
 ## ps3recomp's runtime on Horizon
 
@@ -79,6 +113,13 @@ no developer cheats):
   exception entry.
 - `pipe()` joins `src/hos/hos_compat.c`, failing with ENOSYS: its one caller, a check before a guest
   memory dump, does without.
+
+The host side is a set of objects, not an archive, as Soulbrandt compiles these files into
+`des_boot` itself. From an archive the linker takes only what something asks for by name, and two
+of the files would be left out: `ppu_hle.cpp` has an empty, weak `ppu_hle_register_all`, which
+answers for the NID table's real one, so no system call would reach its handler; and
+`missing_stubs.cpp` sets its hooks from a static constructor. The first game build, from the
+archive, had neither.
 
 Linked whole with the runtime, as before, the host side leaves exactly what the lift provides: the
 lifted code's `function_table` and `function_table_count`, and 60 lifted functions

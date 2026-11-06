@@ -60,6 +60,13 @@ Stage 3 starts with two seconds of a triangle on a dark screen: that is deko3D, 
 screen. Its `gpu:` lines give the frames and their timing, and the `cpu:` lines the cores, how
 fast threads wake each other, and how accurate a short sleep is.
 
+Stage 5 starts SDL2 first, the way the runtime's pad and sound modules do: a short, quiet tone
+plays just before the triangle. The screen's `Controls:` and `Sound:` lines give the controller
+SDL2 sees and the rate the sound device played at (48,000 frames a second is right), and the
+`Buttons:` line at the bottom shows, live, what SDL2 reads from the controller. Press every button
+once, the sticks and ZL and ZR too: the log's `sdl:` lines note each button by SDL2's name the
+first time, which is how the console's buttons reach the game's pad module (stage 7 maps them).
+
 Stage 2 adds the `files:` lines: the game's first files opened by the PS3's paths (one in the
 mixed case the game uses), three DCX files inflated, the SD card's speed for a long read, a seek
 and a small file, the game's way of writing its cache (in `hdd1/`, removed again), and which of the

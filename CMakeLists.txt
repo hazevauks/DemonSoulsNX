@@ -19,6 +19,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
 
+# libnx, deko3D, SDL2 and zlib: desnx::libraries
+include(cmake/desnx_libraries.cmake)
+
 # frame pointers keep the crash reports readable
 add_compile_options(-Wall -Wextra -fno-omit-frame-pointer)
 
@@ -38,6 +41,7 @@ add_library(desnx_platform STATIC
 	src/platform/nx_gpu_probe.c
 	src/platform/nx_guest.c
 	src/platform/nx_log.c
+	src/platform/nx_sdl_probe.c
 	src/platform/nx_system.c
 	src/platform/nx_vfs.c
 	src/platform/nx_vfs_probe.c
@@ -45,8 +49,13 @@ add_library(desnx_platform STATIC
 target_include_directories(desnx_platform PUBLIC src)
 # ps3recomp's header-only checks on game paths (ps3emu/vfs_path.h)
 target_include_directories(desnx_platform PRIVATE third_party/ps3recomp/include)
-find_package(ZLIB REQUIRED)    # switch-zlib, from portlibs
-target_link_libraries(desnx_platform PUBLIC ZLIB::ZLIB deko3d PRIVATE desnx_shaders)
+# The libraries link into whatever uses the platform layer, but their headers stay its own: the
+# lifted code keeps the include folders it compiles with (zlib's portlibs folder only), or every
+# chunk would compile again, for hours
+target_link_libraries(desnx_platform
+	PUBLIC ZLIB::ZLIB
+	PRIVATE desnx::libraries desnx_shaders
+	INTERFACE $<LINK_ONLY:desnx::libraries>)
 
 # ---------------------------------------------------------------------------
 # ps3recomp's runtime, built for Horizon from the vendored sources as they are. src/hos stands
@@ -87,7 +96,11 @@ if(DESNX_RUNTIME AND DESNX_HOST)
 		VERBATIM
 	)
 
-	add_library(desnx_host STATIC
+	# Objects, not an archive: Soulbrandt compiles these into des_boot itself, and from an archive
+	# the linker would leave out what nothing asks for by name. ppu_hle.cpp has an empty weak
+	# ppu_hle_register_all, so the NID table's real one would never be taken, and missing_stubs.cpp
+	# sets its hooks from a static constructor.
+	add_library(desnx_host OBJECT
 		${CMAKE_BINARY_DIR}/host/hle_nid_table.cpp
 		${PS3RECOMP}/runtime/ppu/ppu_loader.cpp
 		${PS3RECOMP}/runtime/ppu/ppu_hle.cpp

@@ -5,11 +5,14 @@
  * that the PS3's 4 GB address space maps in it (nx_guest.c); stage 2, that the game's files
  * open by the PS3's paths, inflate, read and write at a usable speed, and which of the files
  * decrypted on the PC are there (nx_vfs_probe.c); stage 3, that deko3D draws with shaders uam
- * built (nx_gpu_probe.c), and what the cores give the game's threads (nx_cpu_probe.c). The
- * recompiled game takes over from here in a later stage (docs/status.md).
+ * built (nx_gpu_probe.c), and what the cores give the game's threads (nx_cpu_probe.c); stage 5,
+ * that SDL2's game controllers and audio, which the runtime's pad and sound modules use, work in
+ * the same NRO as deko3D (nx_sdl_probe.c). The recompiled game takes over from here in a later
+ * stage (docs/status.md).
  */
 
 #include <stdio.h>
+#include <string.h>
 
 #include <switch.h>
 
@@ -19,11 +22,12 @@
 #include "platform/nx_guest.h"
 #include "platform/nx_log.h"
 #include "platform/nx_paths.h"
+#include "platform/nx_sdl.h"
 #include "platform/nx_system.h"
 #include "platform/nx_vfs.h"
 
 static void show(const NxSystem *system, const NxGuestProbe *guest, const NxGpuProbe *gpu, const NxCpuProbe *cpu,
-                 const NxData *data, const NxVfsProbe *files)
+                 const NxSdlProbe *sdl, const NxData *data, const NxVfsProbe *files)
 {
     printf("\x1b[1;1H\x1b[2J");
     printf("Demon's Souls for Nintendo Switch %s\n", DESNX_VERSION);
@@ -42,7 +46,14 @@ static void show(const NxSystem *system, const NxGuestProbe *guest, const NxGpuP
                gpu->frame_us / 100 % 10);
     else
         printf("GPU:          failed at %s\n", gpu->failed);
-    printf("Cores:        %u for the game, a wake takes %u us\n\n", cpu->cores, (cpu->wake_cross_ns + 500) / 1000);
+    printf("Cores:        %u for the game, a wake takes %u us\n", cpu->cores, (cpu->wake_cross_ns + 500) / 1000);
+    if (sdl->failed)
+        printf("SDL2:         %s failed at %s, see the log\n\n", sdl->version, sdl->failed);
+    else
+        printf("Controls:     SDL2 %s, %d controller%s%s%s\n"
+               "Sound:        %d Hz, %d channels, played at %u frames a second\n\n",
+               sdl->version, sdl->controllers, sdl->controllers == 1 ? "" : "s", sdl->controller[0] ? ": " : "",
+               sdl->controller, sdl->audio_freq, sdl->audio_channels, sdl->audio_rate);
 
     if (!data->found)
         printf("Game files:   not found. Copy the game's folder to\n              " NX_GAME_DIR "/\n");
@@ -64,7 +75,9 @@ static void show(const NxSystem *system, const NxGuestProbe *guest, const NxGpuP
     }
 
     printf("\nThe log is in " NX_LOG_DIR "/" NX_LOG_FILE "\n\n");
-    printf("Press + to exit.\n");
+    printf("Press each button once: the log notes how SDL2 names it.\n");
+    printf("Press + to exit.\n\n");
+    printf("Buttons:      \x1b[s");      /* nx_sdl_pad_line's place, kept for the loop */
     consoleUpdate(NULL);
 }
 
@@ -75,14 +88,19 @@ int main(int argc, char **argv)
 
     nx_log_init(DESNX_VERSION);
     nx_vfs_init();
-
-    /* deko3D first: it takes the window for two seconds, then gives it to the text console */
-    NxGpuProbe gpu;
-    nx_gpu_probe(&gpu);
-    consoleInit(NULL);
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad;
     padInitializeDefault(&pad);
+
+    /* SDL2's controllers and sound before deko3D, so deko3D starts with both running, as in
+     * the game; SDL2's tone plays just before the triangle */
+    NxSdlProbe sdl;
+    nx_sdl_probe(&sdl);
+
+    /* deko3D takes the window for two seconds, then gives it to the text console */
+    NxGpuProbe gpu;
+    nx_gpu_probe(&gpu);
+    consoleInit(NULL);
 
     NxSystem system;
     nx_system_read(&system);
@@ -104,15 +122,25 @@ int main(int argc, char **argv)
     if (data.found && data.right_version)
         nx_vfs_probe(&files);
 
-    show(&system, &guest, &gpu, &cpu, &data, &files);
+    show(&system, &guest, &gpu, &cpu, &sdl, &data, &files);
+    char line[128], shown[128] = "";
     while (appletMainLoop()) {
         padUpdate(&pad);
         if (padGetButtonsDown(&pad) & HidNpadButton_Plus)
             break;
+        if (!sdl.failed) {
+            nx_sdl_pad_line(line, 66);  /* what fits after "Buttons:" on the 80 columns */
+            if (strcmp(line, shown) != 0) {
+                printf("\x1b[u\x1b[K%s", line);
+                consoleUpdate(NULL);
+                strcpy(shown, line);
+            }
+        }
         svcSleepThread(16 * 1000 * 1000);
     }
 
     nx_log("exit\n");
+    nx_sdl_shutdown();
     consoleExit(NULL);
     nx_log_shutdown();
     return 0;
