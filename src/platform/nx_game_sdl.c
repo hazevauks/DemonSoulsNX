@@ -25,6 +25,7 @@
 
 #include <SDL2/SDL_audio.h>
 #include <SDL2/SDL_gamecontroller.h>
+#include <SDL2/SDL_thread.h>
 #include <switch.h>
 
 #include "nx_game_sdl.h"
@@ -38,6 +39,7 @@
 SDL_AudioDeviceID __real_SDL_OpenAudioDevice(const char *device, int iscapture, const SDL_AudioSpec *desired,
                                              SDL_AudioSpec *obtained, int allowed_changes);
 int __real_SDL_QueueAudio(SDL_AudioDeviceID dev, const void *data, Uint32 len);
+int __real_SDL_SetThreadPriority(SDL_ThreadPriority priority);
 SDL_bool __real_SDL_IsGameController(int joystick_index);
 SDL_bool __real_SDL_GameControllerGetAttached(SDL_GameController *gamecontroller);
 SDL_GameController *__real_SDL_GameControllerOpen(int joystick_index);
@@ -98,6 +100,30 @@ int __wrap_SDL_QueueAudio(SDL_AudioDeviceID dev, const void *data, Uint32 len)
     return __real_SDL_QueueAudio(dev, data, len);
 }
 
+/* SDL2's audio thread asks for SDL_THREAD_PRIORITY_TIME_CRITICAL as it starts. On the Switch
+ * that changes nothing, and the thread stays at libnx's 59 with all of the game's. In the first
+ * run past the SPURS wait the device stopped taking from its queue 15 seconds in, while the boot
+ * made a thousand threads: most likely the thread went without the CPU long enough for the audio
+ * renderer's voice to run dry, and switch-sdl2's driver waits for a buffer added to a stopped
+ * voice to start playing, which it never does. A thread that asks for high priority gets 40
+ * here, above the game's; this one sleeps on the renderer between buffers. */
+#define HIGH_PRIORITY 40
+
+int __wrap_SDL_SetThreadPriority(SDL_ThreadPriority priority)
+{
+    const int rc = __real_SDL_SetThreadPriority(priority);
+    if (priority >= SDL_THREAD_PRIORITY_HIGH) {
+        const Result set = svcSetThreadPriority(CUR_THREAD_HANDLE, HIGH_PRIORITY);
+        static int s_told;
+        if (!s_told++)
+            nx_log("sound: a thread asked SDL2 for %s priority: it gets %d%s\n",
+                   priority == SDL_THREAD_PRIORITY_TIME_CRITICAL ? "time-critical" : "high", HIGH_PRIORITY,
+                   R_SUCCEEDED(set) ? "" : ", which the kernel refused");
+        return R_SUCCEEDED(set) ? 0 : rc;
+    }
+    return rc;
+}
+
 void nx_game_sdl_report(void)
 {
     if (!s_device)
@@ -110,10 +136,12 @@ void nx_game_sdl_report(void)
     float peak;
     memcpy(&peak, &bits, sizeof peak);
     const uint32_t queued = SDL_GetQueuedAudioSize(s_device) / (s_frame_bytes ? s_frame_bytes : 1);
+    const SDL_AudioStatus status = SDL_GetAudioDeviceStatus(s_device);
     nx_log("sound: %llu frames a second from the game's mixer (48000 is right), the loudest sample %.3f, "
-           "%u frames queued (%u ms) and two device buffers of %d (%d ms)\n",
+           "%u frames queued (%u ms) and two device buffers of %d (%d ms), the device %s\n",
            us ? (unsigned long long)(frames * 1000000 / us) : 0ull, (double)peak, queued, queued / 48,
-           s_samples, 2 * s_samples / 48);
+           s_samples, 2 * s_samples / 48,
+           status == SDL_AUDIO_PLAYING ? "playing" : status == SDL_AUDIO_PAUSED ? "paused" : "stopped");
 }
 
 /* ---- controls ---------------------------------------------------------------------------- */

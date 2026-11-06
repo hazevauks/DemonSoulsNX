@@ -15,9 +15,18 @@ const char *rsx_d3d12_shader_cache_path(void)
 }
 
 /* des_options.cpp calls the UI's problem-report hook at every frame flip (ui/src/report.cpp).
- * The Switch writes its crash reports to SD_LOG instead, so there is nothing to do here. */
+ * The Switch writes its crash reports to SD_LOG instead; here it counts the game's frames, which
+ * the log gives every 10 seconds (nx_game_main.c): the screen shows nothing yet. */
+static unsigned s_flips;
+
 void des_report_flip_hook(void)
 {
+    __atomic_fetch_add(&s_flips, 1, __ATOMIC_RELAXED);
+}
+
+unsigned nx_port_flips(void)
+{
+    return __atomic_load_n(&s_flips, __ATOMIC_RELAXED);
 }
 
 /* "des_boot --icon <game> <out>" draws the launcher's icon from the game's files on a PC

@@ -48,6 +48,7 @@
 #define RSX_LOCAL_SIZE  0x10000000ull
 
 extern uint8_t *vm_base;                            /* boot_main.cpp */
+unsigned nx_port_flips(void);                       /* nx_port_glue.c: the game's frames so far */
 extern unsigned char g_vm_page_bitmap[65536 / 8];   /* runtime/spu/spu_vm_pagemap.c */
 
 int __real_main(int argc, char **argv);
@@ -145,8 +146,12 @@ static void *watch_thread(void *arg)
     NxGuestStats last = {0};
     unsigned last_threads = 0;
     NxThreadStats last_detached = {0};
+    unsigned last_flips = 0;
     for (unsigned seconds = 10;; seconds += 10) {
         svcSleepThread(10ull * 1000 * 1000 * 1000);
+        const unsigned flips = nx_port_flips();
+        nx_log("frames: %u in the last 10 s, %u in all\n", flips - last_flips, flips);
+        last_flips = flips;
         nx_game_sdl_report();
         NxThreadStats detached;
         nx_game_threads_stats(&detached);
