@@ -3,6 +3,8 @@
 #ifndef NX_LOG_H
 #define NX_LOG_H
 
+#include <stdio.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -15,6 +17,9 @@ void nx_log_shutdown(void);
 /* The game, which has no text screen and many threads: stdout and stderr become the log's own
  * stream (or nxlink's), for the threads created after this call. */
 void nx_log_capture_stdout(void);
+
+/* The log file's stream, or NULL. */
+FILE *nx_log_stream(void);
 
 void nx_log(const char *format, ...) __attribute__((format(printf, 1, 2)));
 

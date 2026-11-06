@@ -64,6 +64,11 @@ void nx_log_capture_stdout(void)
     }
 }
 
+FILE *nx_log_stream(void)
+{
+    return log_file;
+}
+
 void nx_log_shutdown(void)
 {
     fflush(stdout);

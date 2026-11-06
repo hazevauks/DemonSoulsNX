@@ -115,6 +115,19 @@ for the first time, on the same console:
 | Where it stops | about 20 seconds in, a thread waits on SPURS event flag 0x01B93E00, which SPU image 2's job chain sets when HighGraphics starts (Soulbrandt's docs/24); 24 seconds later it was still waiting, and the log ends there. Stage 8 |
 | The log | lines of different threads wrote over each other, with leftover bytes from the SD card in the gaps: stdout, stderr and the log were three streams on one descriptor. They are one stream now, not run yet |
 
+The stage 7 test, the same day, the game's NRO in hand (the Joy-Cons attached):
+
+| What | Result |
+| --- | --- |
+| cellAudio's device | 1024 frames a buffer, for the 256 it asks; 48 kHz, two channels |
+| Frames a second the game's mixer queued, 10 seconds at a time | 48,074, 48,034, 47,987, 43,817 (once), 47,989: the game's audio clock runs at the PS3's rate |
+| Waiting to be played | 1,536 to 1,792 frames in the queue (32 to 37 ms), and the device's two buffers (42 ms) |
+| The game's sound | silence so far, the loudest sample 0.000: it stops before it plays anything |
+| The controllers SDL2 gives cellPad | one: the Joy-Cons in handheld mode, in slot 1; the seven empty slots are no longer pads for the game |
+| The buttons, through cellPad into the game | not seen: this time the game stopped before it first read its pad. The first run read it before its wait |
+| Where it stops | the same wait on SPURS event flag 0x01B93E00, sooner: under 10 seconds in, where the first run got about 20 |
+| The log | gaps again: the runtime makes stdout unbuffered when the PPU starts, and newlib writes to an unbuffered stream outside its lock. The log's stream now stays line-buffered, not run yet |
+
 ## Not checked yet
 
 How late the sound is with 1024-frame buffers: two of them in the audio renderer (43 ms) and
@@ -154,7 +167,7 @@ while they run is a crash. Stage 8, when the game first gets that far.
 | 4. The port's build: ps3recomp's runtime and the lifted game with devkitA64 and CMake | **done** (docs/build.md): the runtime, the host side and the lifted game build and link into the game's NRO, in 134 minutes on a 2-core laptop; it can start once stage 6 gives it guest memory |
 | 5. Toolchain files: devkitA64, libnx, SDL2, deko3D | **done**: the libraries are declared and checked, the game links with all of them; on the console SDL2 and deko3D work together, every button reaches SDL2, and its sound keeps up from 1024 frames a buffer (cellAudio's 256 play at half rate) |
 | 6. POSIX layer, alignment, guest memory on the Switch's heap | **done**: the game's NRO starts, its boot runs on guest memory (467 MB, 61 mappings, nothing refused) and creates the game's 22 PPU threads on capped host stacks |
-| 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | **in progress**: cellAudio on SDL2 with 1024-frame buffers, cellPad on only the slots with a controller, the PS3's button positions; waits for a console test |
+| 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | **in progress**: the game's mixer runs at 48,000 frames a second on SDL2 with 1024-frame buffers, and cellPad gets only the slots with a controller; the buttons' way into the game waits for a run in which the game reads its pad |
 | 8. First boot of the game, with a fallback renderer | to do: the first run waits on HighGraphics' SPURS event flag about 20 seconds in |
 | 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | started: the log exists |
 | 10. Crash triage: alignment faults, missing system calls, null pointers | to do |

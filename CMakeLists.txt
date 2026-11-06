@@ -210,7 +210,7 @@ if(TARGET desnx_host AND DESNX_PPU_CHUNKS)
 	# the boot's main; and host stacks are capped at 16 MB, as libnx takes a whole stack from the heap.
 	# nx_game_sdl.c: cellAudio's device buffer and cellPad's controllers, as the Switch's SDL2 needs
 	target_link_options(demonsouls_game PRIVATE -Wl,-Map=${CMAKE_BINARY_DIR}/demonsouls_game.map -Wl,--gc-sections
-		-Wl,--wrap=main -Wl,--wrap=pthread_attr_setstacksize
+		-Wl,--wrap=main -Wl,--wrap=pthread_attr_setstacksize -Wl,--wrap=setvbuf
 		-Wl,--wrap=SDL_OpenAudioDevice -Wl,--wrap=SDL_QueueAudio
 		-Wl,--wrap=SDL_IsGameController -Wl,--wrap=SDL_GameControllerOpen -Wl,--wrap=SDL_GameControllerGetAttached
 		-Wl,--wrap=SDL_GameControllerGetButton -Wl,--wrap=SDL_GameControllerGetAxis)

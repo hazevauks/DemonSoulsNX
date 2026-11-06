@@ -51,6 +51,20 @@ extern unsigned char g_vm_page_bitmap[65536 / 8];   /* runtime/spu/spu_vm_pagema
 
 int __real_main(int argc, char **argv);
 int __real_pthread_attr_setstacksize(pthread_attr_t *attr, size_t size);
+int __real_setvbuf(FILE *stream, char *buf, int mode, size_t size);
+
+/* With -Wl,--wrap=setvbuf. The runtime makes stdout unbuffered as the PPU starts
+ * (ppu_loader.cpp's ppu_run), so that no line waits in a buffer when a run is killed. Here
+ * stdout is the log's own stream, and newlib writes a printf to an unbuffered stream outside
+ * the stream's lock: two threads at once wrote at the same offset, and moved it past a gap the
+ * SD card fills with whatever its sectors held. Line buffering keeps the lock and still writes
+ * each line as it ends, which is what the runtime wants. */
+int __wrap_setvbuf(FILE *stream, char *buf, int mode, size_t size)
+{
+    if (stream && stream == nx_log_stream() && mode == _IONBF)
+        return 0;   /* it stays line-buffered (nx_log.c) */
+    return __real_setvbuf(stream, buf, mode, size);
+}
 
 static unsigned s_threads, s_capped;
 static unsigned long long s_stack_bytes;
