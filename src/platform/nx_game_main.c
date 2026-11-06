@@ -32,6 +32,7 @@
 #include "../hos/hos_guest.h"
 #include "nx_crash.h"
 #include "nx_data.h"
+#include "nx_game_io.h"
 #include "nx_game_sdl.h"
 #include "nx_game_threads.h"
 #include "nx_guest.h"
@@ -211,6 +212,7 @@ static void *watch_thread(void *arg)
         const unsigned flips = nx_port_flips();
         nx_log("frames: %u in the last 10 s, %u in all\n", flips - last_flips, flips);
         last_flips = flips;
+        nx_game_io_report();
         nx_game_sdl_report();
         NxThreadStats detached;
         nx_game_threads_stats(&detached);

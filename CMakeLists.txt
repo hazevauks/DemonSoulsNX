@@ -126,6 +126,7 @@ if(DESNX_RUNTIME AND DESNX_HOST)
 		${CMAKE_SOURCE_DIR}/src/platform/nx_game_main.c   # the Switch's start, before the boot's main
 		${CMAKE_SOURCE_DIR}/src/platform/nx_game_sdl.c    # the game's sound and controls through SDL2
 		${CMAKE_SOURCE_DIR}/src/platform/nx_game_threads.c   # detached threads, which libnx lacks
+		${CMAKE_SOURCE_DIR}/src/platform/nx_game_io.c        # the game's file I/O, counted
 	)
 	set_property(SOURCE ${CMAKE_SOURCE_DIR}/src/platform/nx_game_main.c
 		APPEND PROPERTY COMPILE_DEFINITIONS DESNX_VERSION="${PROJECT_VERSION}")
@@ -215,6 +216,7 @@ if(TARGET desnx_host AND DESNX_PPU_CHUNKS)
 	target_link_options(demonsouls_game PRIVATE -Wl,-Map=${CMAKE_BINARY_DIR}/demonsouls_game.map -Wl,--gc-sections
 		-Wl,--wrap=main -Wl,--wrap=pthread_attr_setstacksize -Wl,--wrap=setvbuf -Wl,--wrap=pthread_create
 		-Wl,--wrap=abort -Wl,--wrap=__assert_func
+		-Wl,--wrap=_open_r -Wl,--wrap=_read_r -Wl,--wrap=_write_r -Wl,--wrap=_close_r
 		-Wl,--wrap=SDL_OpenAudioDevice -Wl,--wrap=SDL_QueueAudio -Wl,--wrap=SDL_SetThreadPriority
 		-Wl,--wrap=SDL_IsGameController -Wl,--wrap=SDL_GameControllerOpen -Wl,--wrap=SDL_GameControllerGetAttached
 		-Wl,--wrap=SDL_GameControllerGetButton -Wl,--wrap=SDL_GameControllerGetAxis)
