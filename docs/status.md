@@ -162,6 +162,15 @@ The stage 9 test, the same day: the game's NRO sent with `tools/nxlink_run.py`, 
 | `settings.txt` | `settings: DES_SKIP_INTRO=1`, then `[des] DES_SKIP_INTRO=1: boot logos skipped` |
 | The game | the save of the run before found; at the title screen Start, ZL and Cross reached it, and its sound then played on, the loudest sample 0.30 to 0.38 in every 10 seconds to the end. 96 to 115 frames every 10 seconds, the log going to the network |
 
+The stage 10 test, the same day: the game sent with `--set DESNX_CRASH_TEST=30`:
+
+| What | Result |
+| --- | --- |
+| The setting, as one of the NRO's arguments | `settings, from the NRO's arguments: DESNX_CRASH_TEST=30` |
+| The crash, 30 seconds in | the log's last line of ours is the crash test's; the console then shows the system's error and ends the game |
+| `SD_LOG/demonsouls_crash.txt` | written: "a data access fault, translation fault: nothing is mapped there, writing; address 0x8, near zero: a null pointer", ESR 0x92000046, all the registers, four frames of call stack, and "the PS3 code: none on this thread" (the log's own thread) |
+| Its addresses, named on the PC | pc `watch_thread+0x1c4`, the write itself, lr `watch_thread+0x1b4`, then libnx's `__thread_entry` and `_EntryWrap`: the whole stack, right |
+
 ## Not checked yet
 
 How late the sound is with 1024-frame buffers: two of them in the audio renderer (43 ms) and
@@ -219,7 +228,7 @@ Soulbrandt's notes name. The game goes on to its title screen past both.
 | 7. Sound (cellAudio on audren or SDL2) and controls for the Joy-Cons and Pro Controller | **done**: the game's mixer runs at 48,000 frames a second on SDL2 with 1024-frame buffers; cellPad gets only the slots with a controller, and the buttons reach the game in the PS3's positions. Checked in handheld mode; a Pro Controller and detached Joy-Cons take the same way and have not been on the console |
 | 8. First boot of the game, with a fallback renderer | **done**: on the null renderer the game boots to its title screen and runs its loop at about 11 frames a second, with its sound; Start and Cross reach it, it makes its save and plays its menu sounds. Nothing is drawn on the screen until the deko3D renderer (stage 12), and the movies need FFmpeg |
 | 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | **done**: the logs in `SD_LOG`, whole and readable; `tools/nxlink_run.py` sends an NRO to its place on the SD card and keeps its live log on the PC; `settings.txt` sets the runtime's options; `tools/summarize_log.py` sums a log up |
-| 10. Crash triage: alignment faults, missing system calls, null pointers | **in progress**: a crash writes `SD_LOG/demonsouls_crash.txt` (the fault decoded, registers, call stack, the PS3 code), `abort` and `assert` too, and `tools/crash_symbolize.py` names its addresses; the log summary lists the runtime's missing functions and system calls, unlifted calls and the guest's null pointers. The report waits for a console test |
+| 10. Crash triage: alignment faults, missing system calls, null pointers | **done**: a crash writes `SD_LOG/demonsouls_crash.txt` (the fault decoded, registers, call stack, the PS3 code), `abort` and `assert` too, and `tools/crash_symbolize.py` names its addresses; the log summary lists the runtime's missing functions and system calls, unlifted calls and the guest's null pointers. Checked on the console with a crash on purpose; no alignment fault has happened yet |
 | 11. Asset loading: archives, materials, shaders, streaming | to do |
 | 12. Native deko3D renderer | to do |
 | 13. The game's passes: deferred lighting, shadows, post-processing, fog | to do |

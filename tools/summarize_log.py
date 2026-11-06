@@ -76,11 +76,11 @@ def main():
             for line in found[:5]:
                 print("  " + line.strip()[:200])
     show("crash test", [l for l in lines if l.startswith("crash test:")])
+    # (the report's date is the console's clock and an nxlink log's the PC's: they do not compare)
     crash = args.log.with_name("demonsouls_crash.txt")
     if crash.is_file():
-        print("\n%s is beside it (%s): python tools/crash_symbolize.py names its addresses"
-              % (crash.name, "newer than the log" if crash.stat().st_mtime >= args.log.stat().st_mtime
-                 else "older than the log, from another run"))
+        print("\n%s is beside it, from this run or another: python tools/crash_symbolize.py names its "
+              "addresses" % crash.name)
     if any("[spurs-trace]" in l for l in lines):
         print("\nthe SPURS trace is in the log ([spurs-trace] lines)")
     show("save data", [l for l in lines if "[cellSaveData] SAVE complete" in l or "AutoLoad" in l])
