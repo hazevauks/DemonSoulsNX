@@ -47,7 +47,9 @@ jobs:
 
       # stage 1: the NRO holds no game code yet. From stage 4 on, only the runtime is shared.
       # Kept 3 days: every push makes one, and the account's artifact storage filled up at 14.
+      # A full storage only skips the upload: the build above is the check.
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: demonsouls-nro
           path: |
