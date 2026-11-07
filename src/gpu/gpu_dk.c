@@ -46,8 +46,17 @@
 #define CMD_MEM        (1u << 20)
 #define PUSH_UBO       256u        /* a CONST32 slot's uniform buffer */
 #define FREES          4096u
+#define INIT_MEM       (256u << 10)  /* the new targets' clears (init_target) */
+#define INIT_BATCH     256u          /* clears a list holds before it is sent */
 
 enum { MEM_GPU, MEM_UPLOAD, MEM_READBACK, MEM_IMAGE, MEM_KINDS };
+
+/* An on/off setting from the environment (settings.txt), read once. */
+static int knob(const char* name, int def)
+{
+    const char* e = getenv(name);
+    return e && *e ? *e != '0' : def;
+}
 
 static uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1) / a * a; }
 
@@ -218,6 +227,7 @@ typedef struct DkDev {
     Buf*   buf;   uint32_t nbuf;   uint32_t* buf_free;  uint32_t nbuf_free;
     Tex*   tex;   uint32_t ntex;   uint32_t* tex_free;  uint32_t ntex_free;
     View*  view;  uint32_t nview;  uint32_t* view_free; uint32_t nview_free;
+    uint8_t *buf_gen, *tex_gen, *view_gen;   /* each slot's generation (handle) */
     Smp*   smp;   uint32_t nsmp;
     Shd*   shd;   uint32_t nshd;   uint32_t* shd_free;  uint32_t nshd_free;
     Lay    lay[MAX_LAYOUTS];       uint32_t nlay;
@@ -234,6 +244,12 @@ typedef struct DkDev {
     Free     frees[FREES];
     uint32_t nfrees;
     uint32_t submits;
+    /* the new targets' clears, sent before the next submit (init_target) */
+    DkCmdBuf   init_cb;
+    DkMemBlock init_mem;
+    DkFence    init_fence;
+    uint32_t   init_pending, init_fenced;
+    uint32_t   targets_made;
 } DkDev;
 
 #define DD(d) ((DkDev*)(d))
@@ -479,17 +495,41 @@ static uint32_t take(uint32_t* nused, uint32_t cap, uint32_t* free, uint32_t* nf
     return (*nused)++;
 }
 
+/* Handles (gpu.h): the slot + 1 below, the slot's generation in the top 8 bits. The generation
+ * goes up each time a slot is freed, and a slot at 255 is retired, so a handle names one object
+ * for the device's life. The core's table memo (write_tex) compares an entry by its description,
+ * the texture's handle in it: with bare slots, a texture made in a slot just freed had the old
+ * one's handle, the memo took the entry as written, and it kept the old image's address, size
+ * and format (squares and stripes of other textures, and a stale picture in the water). */
+static uint32_t handle(const uint8_t* gen, uint32_t i) { return GPU_HANDLE_MAKE(i, gen[i]); }
+
+static int handle_ok(uint32_t id, uint32_t n, const uint8_t* gen)
+{
+    const uint32_t i = GPU_HANDLE_INDEX(id);
+    return id && i < n && gen[i] == GPU_HANDLE_GEN(id);
+}
+
+static void slot_free(uint8_t* gen, uint32_t i, uint32_t* free, uint32_t* nfree)
+{
+    if (gen[i] == 255) return;   /* retired */
+    gen[i]++;
+    free[(*nfree)++] = i;
+}
+
 static Buf* buf_of(DkDev* dd, gpu_buffer b)
 {
-    return b.id && b.id <= dd->nbuf && dd->buf[b.id - 1].live ? &dd->buf[b.id - 1] : NULL;
+    Buf* r = handle_ok(b.id, dd->nbuf, dd->buf_gen) ? &dd->buf[GPU_HANDLE_INDEX(b.id)] : NULL;
+    return r && r->live ? r : NULL;
 }
 static Tex* tex_of(DkDev* dd, gpu_texture t)
 {
-    return t.id && t.id <= dd->ntex && dd->tex[t.id - 1].live ? &dd->tex[t.id - 1] : NULL;
+    Tex* r = handle_ok(t.id, dd->ntex, dd->tex_gen) ? &dd->tex[GPU_HANDLE_INDEX(t.id)] : NULL;
+    return r && r->live ? r : NULL;
 }
 static View* view_of(DkDev* dd, gpu_view v)
 {
-    return v.id && v.id <= dd->nview && dd->view[v.id - 1].live ? &dd->view[v.id - 1] : NULL;
+    View* r = handle_ok(v.id, dd->nview, dd->view_gen) ? &dd->view[GPU_HANDLE_INDEX(v.id)] : NULL;
+    return r && r->live ? r : NULL;
 }
 
 /* ---------------------------------------------------------------------------
@@ -532,24 +572,25 @@ static gpu_fence dk_signal(gpu_device* d)
 
 static void free_now(DkDev* dd, uint32_t kind, uint32_t id)
 {
+    const uint32_t i = GPU_HANDLE_INDEX(id);
     if (kind == FREE_BUF) {
-        Buf* b = &dd->buf[id - 1];
+        Buf* b = &dd->buf[i];
         mem_free(dd, &b->a);
         memset(b, 0, sizeof *b);
-        dd->buf_free[dd->nbuf_free++] = id - 1;
+        slot_free(dd->buf_gen, i, dd->buf_free, &dd->nbuf_free);
         return;
     }
-    Tex* t = &dd->tex[id - 1];
-    for (uint32_t v = t->views; v; ) {
+    Tex* t = &dd->tex[i];
+    for (uint32_t v = t->views; v; ) {   /* (a texture's views: slots + 1) */
         View* vw = &dd->view[v - 1];
         const uint32_t next = vw->next;
         memset(vw, 0, sizeof *vw);
-        dd->view_free[dd->nview_free++] = v - 1;
+        slot_free(dd->view_gen, v - 1, dd->view_free, &dd->nview_free);
         v = next;
     }
     mem_free(dd, &t->a);
     memset(t, 0, sizeof *t);
-    dd->tex_free[dd->ntex_free++] = id - 1;
+    slot_free(dd->tex_gen, i, dd->tex_free, &dd->ntex_free);
 }
 
 /* Freed once the GPU has passed `after` (gpu.h); at once when it has, or when the list is full
@@ -617,6 +658,7 @@ static void dk_destroy(gpu_device* d)
     free(dd->buf); free(dd->buf_free);
     free(dd->tex); free(dd->tex_free);
     free(dd->view); free(dd->view_free);
+    free(dd->buf_gen); free(dd->tex_gen); free(dd->view_gen);
     free(dd->smp); free(dd->shd); free(dd->shd_free); free(dd->pipe);
     free(dd);
 }
@@ -678,7 +720,7 @@ static gpu_buffer dk_buffer_create(gpu_device* d, const gpu_buffer_desc* desc)
     b->size = desc->size;
     b->gpu = c->gpu + b->a.off;
     b->cpu = c->cpu + b->a.off;
-    gpu_buffer h = {i + 1};
+    gpu_buffer h = {handle(dd->buf_gen, i)};
     return h;
 }
 
@@ -719,6 +761,49 @@ static gpu_addr dk_buffer_addr(gpu_device* d, gpu_buffer b)
 }
 
 /* ---------------------------------------------------------------------------
+ * The census
+ *
+ * DESNX_DK_CENSUS=1 (settings.txt): each kind of target the game makes, of copy it asks for and
+ * of view that reads a texture as another format is named in the log once, the first time it
+ * comes, with the submit it came in. For finding which of them shows as squares and stripes.
+ * -------------------------------------------------------------------------*/
+
+static uint32_t s_now;   /* submits so far, for the census's lines */
+
+static int census_on(void)
+{
+    static int on = -1;
+    if (on < 0) on = knob("DESNX_DK_CENSUS", 0);
+    return on;
+}
+
+static uint64_t mix(uint64_t h, uint64_t v) { return (h ^ v) * 0x100000001b3ull; }
+
+/* 1 the first time key comes; 0 after, and once the table is full. */
+static int census_new(uint64_t key)
+{
+    static uint64_t seen[4096];
+    static uint32_t n;
+    if (n >= 3072) return 0;
+    key |= 1;
+    uint32_t i = (uint32_t)(key ^ (key >> 31)) & 4095u;
+    while (seen[i]) {
+        if (seen[i] == key) return 0;
+        i = (i + 1) & 4095u;
+    }
+    seen[i] = key;
+    n++;
+    return 1;
+}
+
+static uint64_t census_key(uint32_t what, const uint32_t* v, uint32_t n)
+{
+    uint64_t h = mix(0xcbf29ce484222325ull, what);
+    for (uint32_t i = 0; i < n; i++) h = mix(h, v[i]);
+    return h;
+}
+
+/* ---------------------------------------------------------------------------
  * Textures
  * -------------------------------------------------------------------------*/
 
@@ -735,8 +820,11 @@ static void layout_maker(DkDev* dd, const gpu_texture_desc* desc, const Fmt* f, 
     m->dimensions[1] = desc->height ? desc->height : 1;
     m->dimensions[2] = layers;
     m->mipLevels = desc->mips ? desc->mips : 1;
+    static int compress = -1;   /* DESNX_DK_COMPRESS=0 (settings.txt): targets without the hardware's compression */
+    if (compress < 0) compress = knob("DESNX_DK_COMPRESS", 1);
     m->flags = extra;
-    if (desc->use & (GPU_USE_RT | GPU_USE_DS)) m->flags |= DkImageFlags_UsageRender | DkImageFlags_HwCompression;
+    if (desc->use & (GPU_USE_RT | GPU_USE_DS))
+        m->flags |= DkImageFlags_UsageRender | (compress ? DkImageFlags_HwCompression : 0);
     if (!f->block && !f->depth) m->flags |= DkImageFlags_Usage2DEngine;
 }
 
@@ -824,6 +912,62 @@ static uint64_t dk_texture_footprints(gpu_device* d, const gpu_texture_desc* des
     return n ? end - base_offset : 0;
 }
 
+/* A new target starts as zeroes, as a D3D12 committed resource does: its memory may have held
+ * another image, and on a compressed one the hardware's compression marks from it, which read
+ * as squares and stripes of the old contents until every tile is drawn over. The clears go in a
+ * list of their own, sent before the next submit (send_inits), so before anything that uses the
+ * target. DESNX_DK_CLEAR_NEW=0 (settings.txt) leaves new targets as their memory was. */
+static void send_inits(DkDev* dd)
+{
+    if (!dd->init_pending) return;
+    dkCmdBufBarrier(dd->init_cb, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_L2Cache);
+    dkQueueSubmitCommands(dd->queue, dkCmdBufFinishList(dd->init_cb));
+    dkQueueSignalFence(dd->queue, &dd->init_fence, true);
+    dkQueueFlush(dd->queue);
+    dd->init_fenced = 1;
+    dd->init_pending = 0;
+}
+
+static void init_target(DkDev* dd, const Tex* t)
+{
+    static int on = -1;
+    if (on < 0) on = knob("DESNX_DK_CLEAR_NEW", 1);
+    if (!on || !dd->init_cb) return;
+    DkCmdBuf cb = dd->init_cb;
+    for (uint32_t mip = 0; mip < t->mips; mip++)
+        for (uint32_t layer = 0; layer < t->layers; layer++) {
+            if (dd->init_pending >= INIT_BATCH) send_inits(dd);
+            if (!dd->init_pending) {   /* a new list */
+                if (dd->init_fenced) dkFenceWait(&dd->init_fence, -1);   /* (its memory: the last list's) */
+                dd->init_fenced = 0;
+                dkCmdBufClear(cb);
+                dkCmdBufAddMemory(cb, dd->init_mem, 0, INIT_MEM);
+                dkCmdBufBarrier(cb, DkBarrier_Full, 0);   /* what used the memory before is done */
+            }
+            DkImageView v;
+            dkImageViewDefaults(&v, &t->image);
+            v.mipLevelOffset = (uint8_t)mip;
+            v.mipLevelCount = 1;
+            if (t->layers > 1) {
+                v.type = t->samples > 1 ? DkImageType_2DMS : DkImageType_2D;
+                v.layerOffset = (uint16_t)layer;
+                v.layerCount = 1;
+            }
+            uint32_t w = t->width >> mip, h = t->height >> mip;
+            DkScissor s = {0, 0, w ? w : 1, h ? h : 1};
+            dkCmdBufSetScissors(cb, 0, &s, 1);
+            if (t->depth) {
+                dkCmdBufBindRenderTargets(cb, NULL, 0, &v);
+                dkCmdBufClearDepthStencil(cb, true, 0.0f, t->stencil ? 0xFF : 0, 0);
+            } else {
+                DkImageView const* one = &v;
+                dkCmdBufBindRenderTargets(cb, &one, 1, NULL);
+                dkCmdBufClearColorFloat(cb, 0, DkColorMask_RGBA, 0.0f, 0.0f, 0.0f, 0.0f);
+            }
+            dd->init_pending++;
+        }
+}
+
 static gpu_texture dk_texture_create(gpu_device* d, const gpu_texture_desc* desc)
 {
     DkDev* dd = DD(d);
@@ -872,7 +1016,17 @@ static gpu_texture dk_texture_create(gpu_device* d, const gpu_texture_desc* desc
     t->stencil = f.stencil;
     t->bpb = f.bpb;
     t->block = f.block;
-    gpu_texture h = {i + 1};
+    if (desc->use & (GPU_USE_RT | GPU_USE_DS)) {
+        dd->targets_made++;
+        const uint32_t k[] = {desc->format, t->width, t->height, t->layers, t->mips, t->samples, desc->use,
+                              desc->heap.id != 0};
+        if (census_on() && census_new(census_key(1, k, 8)))
+            printf("[dk] census: target, format %u, %ux%u, %u layers, %u mips, %u samples, use %#x%s (submit %u)\n",
+                   desc->format, t->width, t->height, t->layers, t->mips, t->samples, desc->use,
+                   desc->heap.id ? ", placed" : "", s_now);
+        init_target(dd, t);
+    }
+    gpu_texture h = {handle(dd->tex_gen, i)};
     return h;
 }
 
@@ -925,6 +1079,14 @@ static void make_view(const Tex* t, const gpu_view_desc* v, DkImageView* out)
             out->type = t->samples > 1 ? DkImageType_2DMS : DkImageType_2D;
         }
     }
+    if (census_on() && ((t->use & (GPU_USE_RT | GPU_USE_DS)) || (v->format && v->format != t->format))) {
+        const uint32_t k[] = {t->format, v->format, v->kind, v->dim, v->swizzle, t->use & (GPU_USE_RT | GPU_USE_DS),
+                              t->samples, t->layers > 1};
+        if (census_new(census_key(2, k, 8)))
+            printf("[dk] census: view, texture format %u (use %#x, %ux%u, %u layers) as %u, kind %u, dim %u, swizzle %#x "
+                   "(submit %u)\n",
+                   t->format, t->use, t->width, t->height, t->layers, v->format, v->kind, v->dim, v->swizzle, s_now);
+    }
 }
 
 static gpu_view dk_view_get(gpu_device* d, const gpu_view_desc* desc)
@@ -935,7 +1097,7 @@ static gpu_view dk_view_get(gpu_device* d, const gpu_view_desc* desc)
     if (!t) return none;
     for (uint32_t v = t->views; v; v = dd->view[v - 1].next)
         if (!memcmp(&dd->view[v - 1].desc, desc, sizeof *desc)) {
-            gpu_view h = {v};
+            gpu_view h = {handle(dd->view_gen, v - 1)};
             return h;
         }
     const uint32_t i = take(&dd->nview, MAX_VIEWS, dd->view_free, &dd->nview_free);
@@ -944,11 +1106,11 @@ static gpu_view dk_view_get(gpu_device* d, const gpu_view_desc* desc)
     memset(vw, 0, sizeof *vw);
     vw->live = 1;
     vw->desc = *desc;
-    vw->tex = desc->texture.id - 1;
+    vw->tex = GPU_HANDLE_INDEX(desc->texture.id);
     make_view(t, desc, &vw->view);
     vw->next = t->views;
     t->views = i + 1;
-    gpu_view h = {i + 1};
+    gpu_view h = {handle(dd->view_gen, i)};
     return h;
 }
 
@@ -1409,12 +1571,14 @@ static void dk_cmd_end(gpu_device* d, gpu_cmd* c)
 static gpu_fence dk_submit(gpu_device* d, gpu_cmd* const* cmds, uint32_t n, const gpu_submit_desc* how)
 {
     DkDev* dd = DD(d);
+    send_inits(dd);   /* the new targets' clears first */
     for (uint32_t i = 0; i < n; i++)
         if (cmds[i] && cmds[i]->list) {
             dkQueueSubmitCommands(dd->queue, cmds[i]->list);
             cmds[i]->list = 0;
         }
     dd->submits++;
+    s_now = dd->submits;
     if (how && (how->flags & GPU_SUBMIT_SIGNAL)) return dk_signal(d);
     dkQueueFlush(dd->queue);
     return 0;
@@ -1483,7 +1647,7 @@ static gpu_swapchain dk_swap_create(gpu_device* d, const gpu_swapchain_desc* des
         t->layers = t->mips = t->samples = 1;
         t->use = GPU_USE_RT | GPU_USE_COPY_DST | GPU_USE_COPY_SRC;
         t->bpb = 4;
-        s->image[i].id = ti + 1;
+        s->image[i].id = handle(dd->tex_gen, ti);
         list[i] = &t->image;
     }
     DkSwapchainMaker sm;
@@ -1510,7 +1674,7 @@ static void dk_swap_destroy(gpu_device* d, gpu_swapchain sc)
     dkQueueWaitIdle(dd->queue);
     dkSwapchainDestroy(s->sc);
     for (uint32_t i = 0; i < s->n; i++) {
-        Tex* t = &dd->tex[s->image[i].id - 1];
+        Tex* t = &dd->tex[GPU_HANDLE_INDEX(s->image[i].id)];
         t->swap = 0;
         defer_free(dd, FREE_TEX, s->image[i].id, 0);
     }
@@ -1596,10 +1760,10 @@ void gpu_dk_report(gpu_device* d, uint32_t presents)
 {
     DkDev* dd = DD(d);
     printf("[dk] present %u: %llu MB of GPU memory in %u blocks, %u textures, %u buffers, %u pipelines, %u shaders, "
-           "fence %llu of %llu\n",
+           "fence %llu of %llu, %u targets made\n",
            presents, (unsigned long long)(dd->mem_used >> 20), dd->nchunks, dd->ntex - dd->ntex_free,
            dd->nbuf - dd->nbuf_free, dd->npipe, dd->nshd - dd->nshd_free, (unsigned long long)dd->completed,
-           (unsigned long long)dd->signalled);
+           (unsigned long long)dd->signalled, dd->targets_made);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1635,6 +1799,7 @@ static void trace(gpu_cmd* c, const char* fmt, ...)
     if (!s_trace || s_traced >= (uint32_t)s_trace) return;
     s_traced++;
     DkDev* dd = DD(c->head.dev);
+    send_inits(dd);
     dkQueueSubmitCommands(dd->queue, dkCmdBufFinishList(c->cb));
     dkQueueWaitIdle(dd->queue);
     char line[320];
@@ -2059,6 +2224,15 @@ void gpu_dk_cmd_copy_texture(gpu_cmd* c, gpu_texture dst, uint32_t dst_sub, uint
     flush_barrier(c);
     dkCmdBufCopyImage(c->cb, &sv, &sr, &dv, &dr, 0);
     c->drawn = 1;
+    if (census_on()) {
+        const uint32_t k[] = {s->format, d->format, s->width, s->height, d->width, d->height, sr.width, sr.height,
+                              s->use, d->use};
+        if (census_new(census_key(3, k, 10)))
+            printf("[dk] census: copy, format %u (%ux%u, use %#x) %ux%u at %u,%u to format %u (%ux%u, use %#x) at %u,%u "
+                   "(submit %u)\n",
+                   s->format, s->width, s->height, s->use, sr.width, sr.height, sr.x, sr.y, d->format, d->width,
+                   d->height, d->use, x, y, s_now);
+    }
     trace(c, "copy_texture: %u (format %u) sub %u %ux%u at %u,%u to %u (format %u) sub %u at %u,%u,%u", src.id, s->format,
           src_sub, sr.width, sr.height, sr.x, sr.y, dst.id, d->format, dst_sub, x, y, dr.z);
 }
@@ -2096,6 +2270,12 @@ void gpu_dk_cmd_copy_buf_to_tex(gpu_cmd* c, gpu_texture dst, uint32_t dst_sub, u
     flush_barrier(c);
     dkCmdBufCopyBufferToImage(c->cb, &cb, &v, &r, 0);
     c->drawn = 1;
+    if (census_on() && (t->use & (GPU_USE_RT | GPU_USE_DS))) {
+        const uint32_t k[] = {t->format, t->width, t->height, w, h, t->use};
+        if (census_new(census_key(4, k, 6)))
+            printf("[dk] census: upload to a target, format %u (%ux%u, use %#x), %ux%u at %u,%u, pitch %u (submit %u)\n",
+                   t->format, t->width, t->height, t->use, w, h, x, y, from->row_pitch, s_now);
+    }
     trace(c, "copy_buf_to_tex: buffer %u (%llu bytes) at %llu, pitch %u, %u rows, to %u (format %u, %ux%u) sub %u, %ux%u at %u,%u,%u",
           src.id, (unsigned long long)b->size, (unsigned long long)from->offset, from->row_pitch, rows, dst.id, t->format,
           t->width, t->height, dst_sub, w, h, x, y, r.z);
@@ -2126,6 +2306,12 @@ void gpu_dk_cmd_copy_tex_to_buf(gpu_cmd* c, gpu_buffer dst, const gpu_footprint*
     flush_barrier(c);
     dkCmdBufCopyImageToBuffer(c->cb, &v, &r, &cb, 0);
     c->drawn = 1;
+    if (census_on()) {
+        const uint32_t k[] = {t->format, t->width, t->height, r.width, r.height, t->use};
+        if (census_new(census_key(5, k, 6)))
+            printf("[dk] census: readback, format %u (%ux%u, use %#x), %ux%u at %u,%u (submit %u)\n", t->format, t->width,
+                   t->height, t->use, r.width, r.height, r.x, r.y, s_now);
+    }
     trace(c, "copy_tex_to_buf: %u (format %u) sub %u, %ux%u at %u,%u, to buffer %u (%llu bytes) at %llu, pitch %u", src.id,
           t->format, src_sub, r.width, r.height, r.x, r.y, dst.id, (unsigned long long)b->size,
           (unsigned long long)to->offset, to->row_pitch);
@@ -2160,6 +2346,12 @@ void gpu_dk_cmd_resolve(gpu_cmd* c, gpu_texture dst, uint32_t dst_sub, gpu_textu
     flush_barrier(c);
     dkCmdBufResolveImage(c->cb, &sv, &dv);
     c->drawn = 1;
+    if (census_on()) {
+        const uint32_t k[] = {s->format, d->format, s->width, s->height, s->samples};
+        if (census_new(census_key(6, k, 5)))
+            printf("[dk] census: resolve, format %u (%ux%u, %u samples) to format %u (submit %u)\n", s->format, s->width,
+                   s->height, s->samples, d->format, s_now);
+    }
     trace(c, "resolve: %u to %u", src.id, dst.id);
 }
 
@@ -2304,12 +2496,16 @@ gpu_device* gpu_dk_create(const gpu_device_desc* desc)
     dd->shd = calloc(MAX_SHADERS, sizeof *dd->shd);
     dd->shd_free = calloc(MAX_SHADERS, sizeof *dd->shd_free);
     dd->pipe = calloc(MAX_PIPELINES, sizeof *dd->pipe);
+    dd->buf_gen = calloc(MAX_BUFFERS, 1);
+    dd->tex_gen = calloc(MAX_TEXTURES, 1);
+    dd->view_gen = calloc(MAX_VIEWS, 1);
     const uint32_t flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
     dd->img_desc_mem = block(dd, IMAGE_DESCS * sizeof(DkImageDescriptor), flags);
     dd->smp_desc_mem = block(dd, SAMPLER_DESCS * sizeof(DkSamplerDescriptor), flags);
     dd->code_mem = block(dd, CODE_SIZE, flags | DkMemBlockFlags_Code);
     if (!dd->queue || !dd->buf || !dd->tex || !dd->view || !dd->smp || !dd->shd || !dd->pipe || !dd->img_desc_mem ||
-        !dd->smp_desc_mem || !dd->code_mem || !dd->buf_free || !dd->tex_free || !dd->view_free || !dd->shd_free) {
+        !dd->smp_desc_mem || !dd->code_mem || !dd->buf_free || !dd->tex_free || !dd->view_free || !dd->shd_free ||
+        !dd->buf_gen || !dd->tex_gen || !dd->view_gen) {
         printf("[dk] the device's start failed: out of memory\n");
         return NULL;
     }
@@ -2332,9 +2528,9 @@ gpu_device* gpu_dk_create(const gpu_device_desc* desc)
     dd->dummy_rgba8 = dk_texture_create(&dd->base, &td);
     if (!dd->dummy_r8.id || !dd->dummy_rgba8.id) return NULL;
     DkImageView v;
-    dkImageViewDefaults(&v, &dd->tex[dd->dummy_r8.id - 1].image);
+    dkImageViewDefaults(&v, &dd->tex[GPU_HANDLE_INDEX(dd->dummy_r8.id)].image);
     dkImageDescriptorInitialize(&dd->empty_r8, &v, false, false);
-    dkImageViewDefaults(&v, &dd->tex[dd->dummy_rgba8.id - 1].image);
+    dkImageViewDefaults(&v, &dd->tex[GPU_HANDLE_INDEX(dd->dummy_rgba8.id)].image);
     dkImageDescriptorInitialize(&dd->empty_rgba8, &v, false, false);
     gpu_sampler_desc sd;
     memset(&sd, 0, sizeof sd);
@@ -2358,6 +2554,13 @@ gpu_device* gpu_dk_create(const gpu_device_desc* desc)
         c->push = block(dd, GPU_MAX_SLOTS * PUSH_UBO, flags);
         if (!c->cb || !c->push) return NULL;
         c->push_gpu = dkMemBlockGetGpuAddr(c->push);
+    }
+    {   /* the new targets' clears (init_target) */
+        DkCmdBufMaker cm;
+        dkCmdBufMakerDefaults(&cm, dd->dev);
+        dd->init_cb = dkCmdBufCreate(&cm);
+        dd->init_mem = block(dd, INIT_MEM, flags);
+        if (!dd->init_cb || !dd->init_mem) return NULL;
     }
     printf("[dk] device: deko3D, %u recorders, %u image and %u sampler descriptors\n", dd->ncmd, IMAGE_DESCS,
            SAMPLER_DESCS);

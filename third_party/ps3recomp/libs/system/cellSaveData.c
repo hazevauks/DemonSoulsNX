@@ -93,6 +93,13 @@ static int file_sync(FILE* fp)
     if (fflush(fp) != 0) return -1;
 #ifdef _WIN32
     return _commit(_fileno(fp));
+#elif defined(__SWITCH__)
+    /* DemonSoulsNX: the step that fails is named in the log. */
+    if (fsync(fileno(fp)) != 0) {
+        printf("[cellSaveData] fsync failed: %s\n", strerror(errno));
+        return -1;
+    }
+    return 0;
 #else
     return fsync(fileno(fp));
 #endif
@@ -105,6 +112,26 @@ static int file_replace(const char* tmp, const char* dst, const char* dir)
 #ifdef _WIN32
     (void)dir;
     return MoveFileExA(tmp, dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
+#elif defined(__SWITCH__)
+    /* DemonSoulsNX: Horizon's file system renames onto no file that exists (libnx's rename is
+     * fsFsRenameFile, which fails with PathAlreadyExists), so every save after a folder's first
+     * failed at its first file (ICON0.PNG) and the title gave up before its data. The old file
+     * goes to a hidden name first and is removed after the new one is in place. Between the two
+     * renames only the hidden copy and the written .tmp are there; a failed second rename puts
+     * the old file back. */
+    const char* base = strrchr(dst, '/');
+    base = base ? base + 1 : dst;
+    char old[1024 + 16];
+    snprintf(old, sizeof(old), "%s/.%s.old", dir, base);
+    remove(old);
+    const int moved = rename(dst, old) == 0;
+    if (rename(tmp, dst) != 0) {
+        printf("[cellSaveData] rename '%s' failed: %s\n", dst, strerror(errno));
+        if (moved) rename(old, dst);
+        return -1;
+    }
+    if (moved) remove(old);
+    return 0;
 #else
     if (rename(tmp, dst) != 0) return -1;
     const int fd = open(dir, O_RDONLY);   /* the folder's entry for it */

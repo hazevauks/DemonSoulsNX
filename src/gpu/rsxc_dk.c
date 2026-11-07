@@ -164,6 +164,39 @@ static char* dk_fetch_loops(const char* src, size_t n);
 static int dk_compile(gpu_sc_stage stage, const char* src, size_t n, const char* name, const char* entry,
                       unsigned flags, const gpu_layout_desc* layout, gpu_sc_blob* out, char* msg, size_t cap);
 
+/* DESNX_DK_HLSL_DUMP=1 (settings.txt): each program's HLSL as the core hands it over, once, in
+ * <shader cache>/hlsl/<ps|vs>_<bytes>_<key>.hlsl, cached or not; <bytes> is the length FP_LIST
+ * logs for a fragment program, which tells the files apart by program. For reading what a pass
+ * does on the PC. Made from the game's own programs: it stays on the SD card and the PC, never
+ * in the repository. */
+static void dk_hlsl_dump(gpu_sc_stage stage, const char* src, size_t n)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char* e = getenv("DESNX_DK_HLSL_DUMP");
+        on = e && *e && *e != '0';
+    }
+    const char* dir = on ? rsx_d3d12_shader_cache_path() : NULL;
+    if (!dir || !dir[0]) return;
+    char path[600];
+    snprintf(path, sizeof path, "%s/hlsl", dir);
+    static int made;
+    if (!made) {
+        mkdir(dir, 0777);
+        mkdir(path, 0777);
+        made = 1;
+    }
+    const u64 h = dk_fnv(14695981039346656037ull, src, n);
+    snprintf(path, sizeof path, "%s/hlsl/%s_%zu_%016llx.hlsl", dir, stage == GPU_SC_PS ? "ps" : "vs", n,
+             (unsigned long long)h);
+    struct stat st;
+    if (stat(path, &st) == 0) return;
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(src, 1, n, f);
+    fclose(f);
+}
+
 static int rc_be_sc_compile(gpu_sc_stage stage, const char* src, size_t n, const char* name, const char* entry,
                             unsigned flags, const gpu_layout_desc* layout, gpu_sc_blob* out, char* msg, size_t cap)
 {
@@ -176,6 +209,7 @@ static int rc_be_sc_compile(gpu_sc_stage stage, const char* src, size_t n, const
             return 1;
         }
     if (!src) return 0;
+    dk_hlsl_dump(stage, src, n);
     /* everything else, the core's other built-in passes too, through the chain */
     char* edited = dk_fetch_loops(src, n);
     if (edited) {

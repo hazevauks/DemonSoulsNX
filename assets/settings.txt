@@ -29,10 +29,18 @@
 #DESNX_DK_TRACE=4000
 #DESNX_DK_TINT=1
 
+# deko3D's targets: new ones start as zeroes (0 leaves them as their memory was); the hardware's
+# compression on them (0 off); each kind of target, copy and view named in the log once.
+#DESNX_DK_CLEAR_NEW=0
+#DESNX_DK_COMPRESS=0
+#DESNX_DK_CENSUS=1
+
 # The game's shaders, compiled on the console: each step's time in the log, and the GLSL of one
 # that fails. Soulbrandt's pass over every shader at the start is off here; 1 runs it.
 #DESNX_DK_SHADER_TIMES=1
 #DESNX_DK_SHADER_DUMP=1
+# Every program's HLSL to shader_cache/hlsl on the SD card (made from the game: keep it off the repository).
+#DESNX_DK_HLSL_DUMP=1
 #DES_PRECOMPILE=1
 
 # Each port's reads of the pad, in the log.

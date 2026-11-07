@@ -236,7 +236,31 @@ The stage 13 test, the same day: a new character, named, into the first level:
 | What is wrong on the screen | thin white lines down the whole picture at the same columns, in the level and on the loading screen, and small white squares that flash down it for an instant |
 | Other lines in the log | `Multistream: atrac failed to load` (a sound stream); a save could not write its icon (`ICON0.PNG`) and kept the old one |
 
+The stage 13 hunt for the lines and squares, the next day, in the same canal. The user's pictures
+show two faults: in the water, each column one colour from top to bottom (the white lines of the
+first report); and for a frame now and then, a regular grid of short cyan dashes over the near
+part of the picture, up to a straight line across the floor:
+
+| What | Result |
+| --- | --- |
+| A barrier between passes on different targets, and before copies and resolves (`DESNX_DK_PASS_BARRIER`) | kept; both faults stayed |
+| New targets cleared to zero on the GPU, as a D3D12 committed resource is (`DESNX_DK_CLEAR_NEW`) | kept; no change |
+| Handles with a generation (gpu.h: a handle names one object for the device's life) | the backend gave a texture made in a slot just freed the old texture's handle, and the core's table memo, which compares an entry by its description, kept the old image in the entry. Fixed; no change on the screen |
+| Targets without the hardware's compression (`DESNX_DK_COMPRESS=0`) | no change |
+| `SCREEN_AS_TEX=0` and `RSX_DEPTH_AS_COLOR=0` | the whole picture became the water's streaks, the HUD right; `RSX_DEPTH_AS_COLOR=0` alone left the picture as it was. A display-sized texture read from guest memory, where the core puts the last frame's copy, is streaked the same way |
+| The census (`DESNX_DK_CENSUS=1`) | 38 targets in the session, nearly all made once: 1280x720 colour and depth, a 2048x2048 shadow map, reductions of 640x360, 320x180, 160x90, 64x64 and 16x16; each is read back to guest memory, and one is copied to a texture |
+| `FP_IDCOLOR=h`: each of the scene's programs a flat colour | the game's exposure took the scene to white; the squares came in the same cyan, so no scene program draws them |
+| Read in the code and ruled out | deko3D's copies between buffers and images (its source), the uniform buffers' sizes and alignment, the vertex inputs' locations (the spv target's E1), the texture decode, `gl_FragCoord`'s origin (uam takes it as upper left), the depth read as colour (`rsx_d2c` gives no blue) |
+| The saves | every save after its folder's first had failed: ps3recomp writes a file to `.<name>.tmp` and renames it over the old one, and Horizon's file system renames onto no file that exists, so the game's icon failed first and the game wrote none of its data. Now the old file goes to a hidden name first (`cellSaveData.c`, third_party/README.md). Two autosaves in the level then completed, and the next boot loaded the files they wrote |
+
 ## Not checked yet
+
+The tutorial's two faults (stage 13, left for later): the streaks in the canal's water and the
+cyan squares that flash over the near part of the picture. Neither stops the game. What has been
+tried and ruled out is in the stage 13 hunt above. Next to try: `FP_KILL` on the post-processing
+and effect programs (the `0x00B4xxxx` group in `FP_LIST`) one at a time; the targets of one frame
+written to the SD card, to see the pass where the streaks start; and the vertex and texture data
+the SPUs build, which the GPU may read before it is done on some frames.
 
 How late the sound is with 1024-frame buffers: two of them in the audio renderer (43 ms) and
 cellAudio's queue on top. Stage 7 measures it with the game's own sound; if it is too much,
@@ -303,7 +327,7 @@ Soulbrandt's notes name. The game goes on to its title screen past both.
 | 10. Crash triage: alignment faults, missing system calls, null pointers | **done**: a crash writes `SD_LOG/demonsouls_crash.txt` (the fault decoded, registers, call stack, the PS3 code), `abort` and `assert` too, and `tools/crash_symbolize.py` names its addresses; the log summary lists the runtime's missing functions and system calls, unlifted calls and the guest's null pointers. Checked on the console with a crash on purpose; no alignment fault has happened yet |
 | 11. Asset loading: archives, materials, shaders, streaming | **done** to the title screen: where both forms of a file are on the disc, the game opens the `.dcx` (114 of 114, none of the 3 GB of raw twins). The game's file reads and writes are counted by the disc, the cache and the saves: the cache's copies took 10.4 s of writing on the SD card, so the cache is now in memory (32 ms, 52 MB). A load into the Nexus, with the cache read back and a level streaming in, comes after stage 12, when the screen shows where the game is |
 | 12. Native deko3D renderer | **done**, in four steps (docs/engine.md): the portable renderer's core on the Switch (12a), the deko3D backend `src/gpu` (12b), the game's shaders compiled on the console and kept on the SD card (12c), its draws, vertex input and textures (12d). The disclaimer, the title menu, New Game and character creation are drawn, the last perfectly, at 30 frames a second. A program's first compile holds the frames, once: most under half a second, the longest vertex programs 11 to 22 seconds |
-| 13. The game's passes: deferred lighting, shadows, post-processing, fog | **in progress**: the tutorial level is drawn, its light, fog and water right; thin white lines and flashing squares remain |
+| 13. The game's passes: deferred lighting, shadows, post-processing, fog | **done**: the tutorial level is drawn with its light, shadows, fog, water and post-processing, and played; the game's saves now write on the Switch and load back. Two faults are left for later (Not checked yet): streaks in the canal's water, and cyan squares that flash for a frame |
 | 14. Surfaces, framebuffers, textures, geometry buffers | to do |
 | 15. Render pass, lighting, particle and post-processing tuning | to do |
 | 16. Frames and timings against targets: Nexus, Boletaria, Stonefang, HUD, phantoms, cutscenes | to do |

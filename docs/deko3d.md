@@ -12,6 +12,7 @@ but the route switch (`rsx_out.c`), which gains the `deko3d` route.
 | --- | --- |
 | device | one `DkDevice` (depth 0 to 1, origin upper left, y up: D3D12's conventions) and one `DkQueue` (graphics) |
 | memory | `DkMemBlock`s of 32 MB or more, cut by a first-fit allocator, one list per kind: GPU (GPU-cached, CPU-uncached), upload (CPU-uncached), readback (CPU-cached), images, shader code |
+| handles | a slot + 1 and the slot's generation (gpu.h); buffers, textures and views count theirs up when freed, so a table entry compared by its description never takes a new texture for an old one |
 | buffer | a range of a block; `gpu_addr` is its GPU address (`DkGpuAddr`), so a bind needs no lookup |
 | texture | a `DkImage` in image memory, from its `DkImageLayout`; a placed texture (`heap_create`) is put at its offset in the heap's own block |
 | view, sampler | a `DkImageView` kept with its texture; a `DkSampler` description, kept by its bytes |
@@ -95,6 +96,11 @@ screen at 30 a second.
 | `DESNX_DK_CONSERVATIVE=0` or `1` | Mesa's optimization loops run to their end, or once each, for every program (default: once past 20 KB of GLSL) |
 | `DESNX_DK_UAM_OPT_BIG=<0-3>` | nouveau's optimization level for a program past 20 KB of GLSL (default 3) |
 | `DES_PRECOMPILE=1` | Soulbrandt's shader pass at the start, for the spv target's cache (off by default here) |
+| `DESNX_DK_PASS_BARRIER=0` | no barrier of the backend's own between a pass and one on other targets, or before a copy or resolve: only the core's |
+| `DESNX_DK_CLEAR_NEW=0` | new colour and depth targets left as their memory was, instead of cleared to zero before their first use |
+| `DESNX_DK_COMPRESS=0` | targets made without the hardware's compression |
+| `DESNX_DK_CENSUS=1` | each kind of target, copy, read-back and view that reads a texture as another format named in the log once, when it first comes, with the targets made in the present lines |
+| `DESNX_DK_HLSL_DUMP=1` | each program's HLSL, as the core hands it over, to `shader_cache/hlsl` on the SD card, named by stage, length (`FP_LIST`'s) and hash. Made from the game's programs: it stays off the repository |
 
 ## Not done yet
 
@@ -106,7 +112,8 @@ screen at 30 a second.
 - Formats checked on the screen so far: the menus' and character creation's (RGBA8, BC, depth);
   B5G6R5, B5G5R5A1 and B4G4R4A4 are mapped from their names and not yet seen.
 - Barriers are coarse: any gathered barrier waits for all the GPU's work before it.
-- Placed textures and memory given back are not zeroed as gpu.h asks of a texture's own memory.
+- New colour and depth targets are cleared to zero on the GPU before their first use (a list of
+  their own, sent ahead of the next submit); other textures, placed or not, are not zeroed.
 - No GPU timings (`gpu_ns`), no present statistics, no pipeline cache (deko3D has no pipeline
   objects to keep), and `buffer_import_host` is not offered: the guest window is not memory nvmap
   takes.
