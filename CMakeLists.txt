@@ -79,6 +79,15 @@ if(DESNX_RUNTIME)
 	# PUBLIC, which would put it on every lifted chunk's command line and compile them all again, for hours
 	target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_RSX_HAL=1)
 	target_include_directories(ps3recomp_runtime PRIVATE ${CMAKE_SOURCE_DIR}/third_party/ps3recomp/libs/video/gpu)
+	# The compile service's spv target, for the game's shaders on the console (stage 12c): glslang and
+	# SPIRV-Tools, fetched and built here (cmake/desnx_shader_compilers.cmake), PRIVATE as the rest
+	include(cmake/desnx_shader_compilers.cmake)
+	target_sources(ps3recomp_runtime PRIVATE
+		${CMAKE_SOURCE_DIR}/third_party/ps3recomp/libs/video/gpu/gpu_shader_spv.cpp
+		${CMAKE_SOURCE_DIR}/third_party/ps3recomp/libs/video/gpu/gpu_shader_spv_edit.cpp)
+	target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_RSX_HAL_SPV=1)
+	target_link_libraries(ps3recomp_runtime PRIVATE
+		glslang glslang-default-resource-limits SPIRV-Tools-opt SPIRV-Tools-static)
 	add_custom_target(desnx_runtime ALL DEPENDS ps3recomp_runtime)
 endif()
 
@@ -160,8 +169,10 @@ if(DESNX_RUNTIME AND DESNX_HOST)
 	nx_add_shader_program(blit_vsh src/gpu/shaders/blit_vsh.glsl vert)
 	nx_add_shader_program(blit_fsh src/gpu/shaders/blit_fsh.glsl frag)
 	dkp_add_embedded_binary_library(desnx_gpu_shaders blit_vsh blit_fsh)
-	add_library(desnx_gpu OBJECT src/gpu/gpu_dk.c src/gpu/rsxc_dk.c)
-	set_target_properties(desnx_gpu PROPERTIES C_STANDARD 17)
+	# with the game's shaders compiled on the console: SPIR-V to GLSL (SPIRV-Cross) to DKSH (uam)
+	add_subdirectory(third_party/uam EXCLUDE_FROM_ALL)
+	add_library(desnx_gpu OBJECT src/gpu/gpu_dk.c src/gpu/rsxc_dk.c src/gpu/gpu_dk_sc.cpp)
+	set_target_properties(desnx_gpu PROPERTIES C_STANDARD 17 CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 	target_include_directories(desnx_gpu BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/src/hos/include)
 	target_include_directories(desnx_gpu PRIVATE
 		${CMAKE_SOURCE_DIR}/src/gpu ${PS3RECOMP}/include ${PS3RECOMP}/libs/video ${PS3RECOMP}/libs/video/gpu
@@ -173,7 +184,8 @@ if(DESNX_RUNTIME AND DESNX_HOST)
 	target_compile_definitions(desnx_gpu PRIVATE _GNU_SOURCE PS3RECOMP_RSX_HAL=1)
 	# the shaders' headers for these two files only; their objects go into the game itself (below), as
 	# an object library's own objects reach only a target that lists them
-	target_link_libraries(desnx_gpu PUBLIC ps3recomp_runtime PRIVATE desnx_gpu_shaders)
+	target_link_libraries(desnx_gpu PUBLIC ps3recomp_runtime
+		PRIVATE desnx_gpu_shaders spirv-cross-glsl spirv-cross-core uam_lib)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -222,7 +234,9 @@ if(TARGET desnx_host AND DESNX_PPU_CHUNKS)
 	message(STATUS "Game: ${DESNX_N_PPU} lifted PPU chunks, ${DESNX_N_SPU} lifted SPU images")
 
 	add_executable(demonsouls_game ${DESNX_GAME_SOURCES} src/platform/nx_guest_fault.s
-		$<TARGET_OBJECTS:desnx_gpu_shaders>)
+		$<TARGET_OBJECTS:desnx_gpu_shaders> ${UAM_OBJECT})
+	set_source_files_properties(${UAM_OBJECT} PROPERTIES EXTERNAL_OBJECT ON GENERATED ON)
+	add_dependencies(demonsouls_game uam_link)
 	set_target_properties(demonsouls_game PROPERTIES C_STANDARD 17 CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 	target_include_directories(demonsouls_game BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/src/hos/include)
 	target_include_directories(demonsouls_game PRIVATE

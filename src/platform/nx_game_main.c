@@ -257,6 +257,13 @@ int __wrap_main(int argc, char **argv)
     nx_settings_load();     /* after the drives, so a setting may name another */
     nx_settings_args(argc, argv);
     nx_cache_mem_init();    /* /dev_hdd1 in memory, unless a setting says otherwise */
+    /* Soulbrandt's shader pass at the start compiles every program in the game's shader archives
+     * for each target the runtime has: here the spv target's, a cache only Vulkan reads, which on
+     * the console holds the boot for minutes. The deko3D route compiles each program as the game
+     * first draws with it, into a cache of its own (docs/deko3d.md). DES_PRECOMPILE in settings.txt
+     * still wins. */
+    if (!getenv("DES_PRECOMPILE"))
+        setenv("DES_PRECOMPILE", "0", 1);
     NxSystem system;
     nx_system_read(&system);
     nx_system_log(&system);

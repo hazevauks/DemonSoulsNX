@@ -29,6 +29,12 @@
 #DESNX_DK_TRACE=4000
 #DESNX_DK_TINT=1
 
+# The game's shaders, compiled on the console: each step's time in the log, and the GLSL of one
+# that fails. Soulbrandt's pass over every shader at the start is off here; 1 runs it.
+#DESNX_DK_SHADER_TIMES=1
+#DESNX_DK_SHADER_DUMP=1
+#DES_PRECOMPILE=1
+
 # Each port's reads of the pad, in the log.
 #PAD_TRACE=1
 

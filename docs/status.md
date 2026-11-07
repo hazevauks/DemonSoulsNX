@@ -213,6 +213,16 @@ three runs to the title screen, Start and Cross:
 | `DESNX_DK_TINT=1`: a clear to black as a colour that goes round the hues | the screen's colour changed slowly, as it should: the clears, the copy into the display target, the blit and the presents reach the screen |
 | The rest | 30 frames a second; 412 MB of GPU memory in 10 blocks, steady; every fence passed (6,601 of 6,601); Start and Cross reached the game. The game's own draws are left out: their programs have no shaders yet (`no DKSH for vp yet`), which is stage 12c |
 
+The stage 12c tests, the same day: the game's shaders compiled on the console (HLSL to SPIR-V,
+GLSL and DKSH, `src/gpu/gpu_dk_sc.cpp`, docs/deko3d.md), cached on the SD card:
+
+| What | Result |
+| --- | --- |
+| The first run | the boot stood still with a dark blue screen (the renderer's own, with no frame from the game): with the spv target in the runtime, Soulbrandt's shader pass at the start compiled every program of the game's archives for Vulkan's cache. It is off on the Switch now (`DES_PRECOMPILE=0`) |
+| The second run, on the screen | **the game draws**: the disclaimer, the title menu, New Game, and on to character creation, which was dark |
+| The compiles | the first, 154 ms; then a vertex program of 7 instructions held the frames for about 50 seconds and one of 67 for about 90: the game draws on the thread that compiles. Which of the three steps takes the time is the next run's question (the log now names it for a compile over half a second) |
+| The sound | the mixer at 48,000 frames a second, its queue never empty; on the console a strong hiss in the game's sound, not in the numbers |
+
 ## Not checked yet
 
 How late the sound is with 1024-frame buffers: two of them in the audio renderer (43 ms) and
@@ -279,7 +289,7 @@ Soulbrandt's notes name. The game goes on to its title screen past both.
 | 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | **done**: the logs in `SD_LOG`, whole and readable; `tools/nxlink_run.py` sends an NRO to its place on the SD card and keeps its live log on the PC; `settings.txt` sets the runtime's options; `tools/summarize_log.py` sums a log up |
 | 10. Crash triage: alignment faults, missing system calls, null pointers | **done**: a crash writes `SD_LOG/demonsouls_crash.txt` (the fault decoded, registers, call stack, the PS3 code), `abort` and `assert` too, and `tools/crash_symbolize.py` names its addresses; the log summary lists the runtime's missing functions and system calls, unlifted calls and the guest's null pointers. Checked on the console with a crash on purpose; no alignment fault has happened yet |
 | 11. Asset loading: archives, materials, shaders, streaming | **done** to the title screen: where both forms of a file are on the disc, the game opens the `.dcx` (114 of 114, none of the 3 GB of raw twins). The game's file reads and writes are counted by the disc, the cache and the saves: the cache's copies took 10.4 s of writing on the SD card, so the cache is now in memory (32 ms, 52 MB). A load into the Nexus, with the cache read back and a level streaming in, comes after stage 12, when the screen shows where the game is |
-| 12. Native deko3D renderer | **in progress**, in four steps (docs/engine.md). 12a done: the portable renderer's core runs on the Switch on its null GPU backend, and every command of 3,685 frames passed the GPU layer's checks; the game keeps 30 frames a second at its title screen. 12b done: the deko3D backend (`src/gpu`) runs the core's frames on the GPU, 4,000 commands with no fault, and its clears, copies, blit and presents reach the screen. Next, 12c: the game's shaders |
+| 12. Native deko3D renderer | **in progress**, in four steps (docs/engine.md). 12a done: the portable renderer's core runs on the Switch on its null GPU backend, and every command of 3,685 frames passed the GPU layer's checks; the game keeps 30 frames a second at its title screen. 12b done: the deko3D backend (`src/gpu`) runs the core's frames on the GPU, 4,000 commands with no fault, and its clears, copies, blit and presents reach the screen. 12c in progress: the game's shaders are compiled on the console, and the disclaimer, the title menu and New Game are drawn; a compile can hold the frames for up to 90 seconds, and character creation is dark |
 | 13. The game's passes: deferred lighting, shadows, post-processing, fog | to do |
 | 14. Surfaces, framebuffers, textures, geometry buffers | to do |
 | 15. Render pass, lighting, particle and post-processing tuning | to do |

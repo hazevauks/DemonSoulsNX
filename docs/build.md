@@ -128,6 +128,15 @@ no developer cheats):
   `desnx_gpu_shaders`, whose objects are sources of the game itself: an object library's objects
   reach only a target that lists them, and linking the library would put its include folder on
   every chunk's command line.
+- **The shader compilers the game runs** (stage 12c, docs/deko3d.md): glslang, SPIRV-Tools,
+  SPIRV-Headers and SPIRV-Cross are fetched at configure time at ps3recomp's pins and built static
+  for Horizon (`cmake/desnx_shader_compilers.cmake`; their builds run Python, and glslang's
+  precompiled header is off, as its path came out in the devkitPro shell's own form). ps3recomp's
+  spv target joins the runtime with `PS3RECOMP_RSX_HAL_SPV`, `PRIVATE` as the rest. uam
+  (`third_party/uam`) is one object put together after its build, its names prefixed, as
+  switch-mesa's EGL has the same Mesa code. The first build of all of it takes about 25 minutes.
+- Threads that ask for no stack size get 1 MB (`nx_game_threads.c`): the core starts its
+  workers that way, and the compilers recurse deeply.
 
 The host side is a set of objects, not an archive, as Soulbrandt compiles these files into
 `des_boot` itself. From an archive the linker takes only what something asks for by name, and two

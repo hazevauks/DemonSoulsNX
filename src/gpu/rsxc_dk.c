@@ -19,10 +19,27 @@
 #include "gpu_dk_cmd.h"
 #include "gpu_shader.h"
 
+#include "gpu_shader_spv.h"
+#include "gpu_dk_sc.h"
+
+#include <sys/stat.h>
+
 #include "blit_fsh_dksh.h"
 #include "blit_vsh_dksh.h"
 
-static gpu_device* rc_be_create(const gpu_device_desc* dd) { return gpu_dk_create(dd); }
+const char* rsx_d3d12_shader_cache_path(void);   /* the port's (src/platform/nx_port_glue.c) */
+
+/* The device, and the spv target's post-passes for it: NoContraction and the invariant
+ * position, no float controls (GLSL has none to carry them), and the vertex fetch kept inside
+ * t20, as deko3D reads past a storage buffer's end as it finds it. */
+static gpu_device* rc_be_create(const gpu_device_desc* dd)
+{
+    gpu_device* const d = gpu_dk_create(dd);
+    if (d)
+        gpu_sc_spv_set_options((GPU_SC_SPV_DEFAULT & ~(GPU_SC_SPV_FLOAT_PRESERVE | GPU_SC_SPV_DENORM_PRESERVE)) |
+                               GPU_SC_SPV_FETCH_CLAMP);
+    return d;
+}
 
 /* The core opens no window: the swap chain is on the default one (gpu_dk.c). */
 static const int rc_be_headless = 1;
@@ -66,10 +83,85 @@ static const struct {
     {"blit_vs", blit_vsh_dksh, &blit_vsh_dksh_size},
     {"blit_ps", blit_fsh_dksh, &blit_fsh_dksh_size},
 };
+/* The DKSH cache on the SD card: <shader cache>/dk/<key>.dksh, the key FNV-1a 64 over what the
+ * code depends on: this file's version of the chain, the spv target's tag (its compilers, their
+ * versions, its edits and the layout), the stage, the entry point and the text. */
+static u64 dk_fnv(u64 h, const void* p, size_t n)
+{
+    for (size_t i = 0; i < n; i++) { h ^= ((const u8*)p)[i]; h *= 1099511628211ull; }
+    return h;
+}
+static int dk_cache_file(gpu_sc_stage stage, const char* src, size_t n, const char* entry, const gpu_layout_desc* layout,
+                         char* path, size_t cap)
+{
+    const char* dir = rsx_d3d12_shader_cache_path();
+    if (!dir || !dir[0]) return 0;
+    static int made;
+    char sub[512];
+    snprintf(sub, sizeof sub, "%s/dk", dir);
+    if (!made) {
+        mkdir(dir, 0777);
+        mkdir(sub, 0777);
+        made = 1;
+    }
+    char tag[512];
+    gpu_spv_tag(layout, tag, sizeof tag);
+    u64 h = 14695981039346656037ull;
+    static const char version[] = "dksh 1: spirv-cross glsl 460 flip-y, uam 1.1.0;";
+    h = dk_fnv(h, version, sizeof version - 1);
+    h = dk_fnv(h, tag, strlen(tag));
+    const u32 st = (u32)stage;
+    h = dk_fnv(h, &st, sizeof st);
+    if (entry) h = dk_fnv(h, entry, strlen(entry));
+    h = dk_fnv(h, src, n);
+    snprintf(path, cap, "%s/%016llx.dksh", sub, (unsigned long long)h);
+    return 1;
+}
+
+static int dk_cache_read(const char* path, gpu_sc_blob* out)
+{
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    const long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    void* p = n > 0 ? malloc((size_t)n) : NULL;
+    const int ok = p && fread(p, 1, (size_t)n, f) == (size_t)n;
+    fclose(f);
+    if (!ok) { free(p); return 0; }
+    out->data = p;
+    out->size = (size_t)n;
+    out->impl = p;   /* (gpu_sc_blob_release frees it) */
+    return 1;
+}
+
+static void dk_cache_write(const char* path, const void* p, size_t n)
+{
+    char tmp[600];
+    snprintf(tmp, sizeof tmp, "%s.part", path);
+    FILE* f = fopen(tmp, "wb");
+    if (!f) return;
+    const int ok = fwrite(p, 1, n, f) == n;
+    if (fclose(f) == 0 && ok) rename(tmp, path);
+    else remove(tmp);
+}
+
+/* What the compiles cost, every 50 (the log's). */
+static volatile LONG s_dk_hits, s_dk_made, s_dk_failed;
+static double s_dk_ms;
+static void dk_count(int made, double ms)
+{
+    const LONG m = made ? InterlockedIncrement(&s_dk_made) : s_dk_made;
+    if (made) s_dk_ms += ms;
+    const LONG all = s_dk_made + s_dk_hits + s_dk_failed;
+    if (all % 50 == 1)
+        printf("[dk] shaders: %ld compiled (%.0f ms each on average), %ld from the SD card's cache, %ld failed\n",
+               (long)m, m ? s_dk_ms / (double)m : 0.0, (long)s_dk_hits, (long)s_dk_failed);
+}
+
 static int rc_be_sc_compile(gpu_sc_stage stage, const char* src, size_t n, const char* name, const char* entry,
                             unsigned flags, const gpu_layout_desc* layout, gpu_sc_blob* out, char* msg, size_t cap)
 {
-    (void)stage; (void)src; (void)n; (void)entry; (void)flags; (void)layout;
     for (size_t i = 0; name && i < sizeof k_rc_dk_builtin / sizeof k_rc_dk_builtin[0]; i++)
         if (!strcmp(name, k_rc_dk_builtin[i].name)) {
             out->data = k_rc_dk_builtin[i].code;
@@ -78,9 +170,51 @@ static int rc_be_sc_compile(gpu_sc_stage stage, const char* src, size_t n, const
             if (msg && cap) msg[0] = 0;
             return 1;
         }
-    if (msg && cap)
-        snprintf(msg, cap, "no DKSH for %s yet: the game's programs come with stage 12c", name ? name : "a program");
-    return 0;
+    if (!src) return 0;
+    /* everything else, the core's other built-in passes too, through the chain */
+    const gpu_layout_desc* const lay = layout ? layout : gpu_spv_guest_layout();
+    char path[600];
+    const int cached = dk_cache_file(stage, src, n, entry, lay, path, sizeof path);
+    if (cached && dk_cache_read(path, out)) {
+        InterlockedIncrement(&s_dk_hits);
+        return 1;
+    }
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    gpu_sc_blob spv;
+    memset(&spv, 0, sizeof spv);
+    if (gpu_sc_compile_layout(GPU_SC_SPV, stage, src, n, name, entry, layout, flags | GPU_SC_NO_CACHE, &spv, msg, cap) !=
+        GPU_SC_OK) {
+        InterlockedIncrement(&s_dk_failed);
+        static int said_spv;
+        if (said_spv++ < 8) printf("[dk] shader %s: the spv target refused it: %s\n", name ? name : "?", msg ? msg : "?");
+        dk_count(0, 0);
+        return 0;
+    }
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const double spv_ms = (double)(ts.tv_sec - t0.tv_sec) * 1e3 + (double)(ts.tv_nsec - t0.tv_nsec) / 1e6;
+    if (spv_ms > 500.0 || getenv("DESNX_DK_SHADER_TIMES"))
+        printf("[dk] shader %s: glslang and SPIRV-Tools %.0f ms (%zu bytes of HLSL)\n", name ? name : "?", spv_ms, n);
+    void* dksh = NULL;
+    size_t size = 0;
+    const int ok = gpu_dk_sc_dksh(stage, (const uint32_t*)spv.data, spv.size / 4, lay, &dksh, &size, msg, cap);
+    gpu_sc_blob_release(&spv);
+    if (!ok) {
+        InterlockedIncrement(&s_dk_failed);
+        static int said;
+        if (said++ < 8) printf("[dk] shader %s (%s) failed: %s\n", name ? name : "?", stage == GPU_SC_PS ? "ps" : "vs",
+                               msg ? msg : "?");
+        dk_count(0, 0);
+        return 0;
+    }
+    if (cached) dk_cache_write(path, dksh, size);
+    out->data = dksh;
+    out->size = size;
+    out->impl = dksh;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    dk_count(1, (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6);
+    return 1;
 }
 static int rc_be_sc_load(gpu_sc_stage stage, u64 key, gpu_sc_blob* out)
 {

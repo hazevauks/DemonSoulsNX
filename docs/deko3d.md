@@ -44,6 +44,27 @@ The guest pipelines' layout (`gpu.h`) is then: the vertex stage's uniform buffer
 (`b2`, the push constant) and storage buffer 4 (`t20`); the pixel stage's uniform buffer 1 (`b1`)
 and textures 0 to 15, each with its own sampler, as the RSX's texture units have.
 
+## The game's shaders (12c)
+
+Compiled on the console, the first time each is drawn with, and kept on the SD card in
+`switch/demonsouls/shader_cache/dk/<key>.dksh`, the key over the chain's version, the spv
+target's tag (its compilers, edits and layout), the stage, the entry point and the text:
+
+1. the core's HLSL to SPIR-V: ps3recomp's spv target (`gpu_shader_spv*.cpp`: its text edits,
+   glslang, SPIRV-Tools' legalization), in the Vulkan backend's binding model, with
+   NoContraction, the invariant position and the vertex fetch clamped to t20;
+2. SPIR-V to GLSL 4.60: SPIRV-Cross (`src/gpu/gpu_dk_sc.cpp`), each texture combined with its
+   sampler at the texture's register, every binding moved to the rules above, the push
+   constants as a uniform buffer, and y flipped back: the spv target flips it for Vulkan;
+3. GLSL to DKSH: uam (`third_party/uam`), linked into the game.
+
+glslang, SPIRV-Tools and SPIRV-Cross are fetched at ps3recomp's pins and built for Horizon
+(`cmake/desnx_shader_compilers.cmake`). uam brings a copy of Mesa's GLSL compiler, as
+switch-mesa's EGL does (SDL2 links it): uam goes into one object with every name it defines but
+`DekoCompiler` prefixed `uam_`, so the two never meet. Soulbrandt's shader pass at the start,
+which compiles every program in the game's archives for the spv target's own cache, is off
+(`DES_PRECOMPILE=0`): Vulkan's cache is of no use here.
+
 ## Built-in passes
 
 The core makes a few shaders of its own, by name (`sc_shader_for`): the present's blit
@@ -68,10 +89,14 @@ screen at 30 a second.
 | `RSX_BACKEND=null` | the null backend instead (it records and checks every command, and draws nothing) |
 | `DESNX_DK_TRACE=<n>` | the first n commands that give the GPU work are each sent and waited for on their own, and the first after which the queue is in its error state is named in the log with its arguments. Slow |
 | `DESNX_DK_TINT=1` | a clear to black clears to a colour going round the hues instead, so the screen shows the clears, copies, blit and presents working while the game's draws have no shaders |
+| `DESNX_DK_SHADER_TIMES=1` | each compile's steps and their times in the log (without it, only compiles over half a second) |
+| `DESNX_DK_SHADER_DUMP=1` | the GLSL of a program uam refuses, in the log |
+| `DES_PRECOMPILE=1` | Soulbrandt's shader pass at the start, for the spv target's cache (off by default here) |
 
 ## Not done yet
 
-- The game's shaders (12c), and with them its draws, vertex input and textures (12d).
+- Compiles on the thread that draws: a long one holds the frames (up to 90 seconds so far).
+- Character creation is dark; the game's draws, vertex input and textures are 12d.
 - Barriers are coarse: any gathered barrier waits for all the GPU's work before it.
 - Placed textures and memory given back are not zeroed as gpu.h asks of a texture's own memory.
 - No GPU timings (`gpu_ns`), no present statistics, no pipeline cache (deko3D has no pipeline

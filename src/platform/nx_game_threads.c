@@ -72,8 +72,23 @@ int __syscall_thread_detach(struct __pthread_t *thread)
     return 0;
 }
 
+/* A thread that asks for no stack size gets at least this: the renderer's core starts its workers
+ * that way (CreateThread with 0), and they may compile shaders, which glslang and SPIRV-Tools do
+ * with deep recursion (stage 12c). libnx's default is far less. */
+#define MIN_STACK (1u << 20)
+
 int __wrap_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)(void *), void *arg)
 {
+    size_t size = 0;
+    pthread_attr_t bigger;
+    if (!attr || (pthread_attr_getstacksize(attr, &size) == 0 && size < MIN_STACK)) {
+        if (attr)
+            bigger = *attr;
+        else
+            pthread_attr_init(&bigger);
+        pthread_attr_setstacksize(&bigger, MIN_STACK);
+        attr = &bigger;
+    }
     const int rc = __real_pthread_create(thread, attr, start, arg);
     int state = PTHREAD_CREATE_JOINABLE;
     if (rc == 0 && attr && pthread_attr_getdetachstate(attr, &state) == 0 && state == PTHREAD_CREATE_DETACHED)
