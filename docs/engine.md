@@ -40,8 +40,8 @@ Stage 12 builds it in four steps, each checked on the console before the next:
 | Step | What | State |
 | --- | --- | --- |
 | 12a | The core on Horizon, on the GPU layer's null backend: it records and checks every command and draws nothing. The route switch has no legacy renderer here, so every route is the new path's | done: 0 failed checks in 3,685 frames, 30 frames a second at the title screen |
-| 12b | `gpu_dk*`: device, queue, memory, command buffers, the swap chain; clears, copies and the present, with the core's built-in passes compiled by uam at build time | next |
-| 12c | The game's shaders: the core's HLSL to DKSH (below), and where that runs | to do |
+| 12b | `gpu_dk*`: device, queue, memory, command buffers, the swap chain; clears, copies and the present, with the core's built-in passes compiled by uam at build time | done: `src/gpu` (docs/deko3d.md); 4,000 commands with no fault, the frames on the screen at 30 a second |
+| 12c | The game's shaders: the core's HLSL to DKSH (below), and where that runs | next |
 | 12d | Draws: vertex and index buffers, textures and samplers, the title screen on the screen | to do |
 
 Because deko3D has no pipeline objects, the stutter Soulbrandt fights by predicting pipelines

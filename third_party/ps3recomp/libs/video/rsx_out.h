@@ -147,6 +147,9 @@ const char* rsxc_d3d12_start_failed(void);
 #endif
 #if defined(_WIN32) || defined(__linux__) || defined(__SWITCH__)   /* DemonSoulsNX: and Horizon */
 extern const rsx_route rsxc_route_null;
+#if defined(__SWITCH__)
+extern const rsx_route rsxc_route_dk;   /* DemonSoulsNX: the port's src/gpu/rsxc_dk.c */
+#endif
 #if defined(PS3RECOMP_RSX_HAL_VULKAN)
 extern const rsx_route rsxc_route_vk;   /* rsxc_vk.c */
 /* Step V6: the step a failed Vulkan start stopped at (rsxc_vk.c), NULL;
@@ -221,6 +224,9 @@ extern const rsx_route_gpu rsxc_route_gpu_d3d12;
 #endif
 #if defined(_WIN32) || defined(__linux__) || defined(__SWITCH__)   /* DemonSoulsNX: and Horizon */
 extern const rsx_route_gpu rsxc_route_gpu_null;
+#if defined(__SWITCH__)
+extern const rsx_route_gpu rsxc_route_gpu_dk;   /* DemonSoulsNX */
+#endif
 #if defined(PS3RECOMP_RSX_HAL_VULKAN)
 extern const rsx_route_gpu rsxc_route_gpu_vk;
 #endif

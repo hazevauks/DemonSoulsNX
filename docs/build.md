@@ -122,6 +122,12 @@ no developer cheats):
   which would reach every lifted chunk's command line. Turning it on compiled the runtime and the
   host side again (330 objects, 4.5 minutes), and none of the chunks. The core's one call newlib
   lacks, `glob()`, joins `hos_compat.c`.
+- **The deko3D backend** (`src/gpu`, docs/deko3d.md) is an object library of its own,
+  `desnx_gpu`: the backend and the core compiled for it, with the flags the host side has. The
+  built-in passes' GLSL (`src/gpu/shaders`) is compiled by uam at build time into
+  `desnx_gpu_shaders`, whose objects are sources of the game itself: an object library's objects
+  reach only a target that lists them, and linking the library would put its include folder on
+  every chunk's command line.
 
 The host side is a set of objects, not an archive, as Soulbrandt compiles these files into
 `des_boot` itself. From an archive the linker takes only what something asks for by name, and two

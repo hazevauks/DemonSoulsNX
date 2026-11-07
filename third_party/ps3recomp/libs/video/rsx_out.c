@@ -57,7 +57,7 @@ void rsx_prof_title(const char* note);
 #define RSX_OUT_FALLS_BACK 1
 #endif
 
-enum { ROUTE_NONE, ROUTE_LEGACY, ROUTE_D3D12, ROUTE_NULL, ROUTE_VULKAN };
+enum { ROUTE_NONE, ROUTE_LEGACY, ROUTE_D3D12, ROUTE_NULL, ROUTE_VULKAN, ROUTE_DEKO3D };   /* DemonSoulsNX: deko3d */
 /* ROUTE_DEFAULT: RSX_BACKEND unset. ROUTE_D3D: RSX_BACKEND=d3d12, and what a
  * Vulkan start that fails (or did not finish last time) runs instead. Off
  * Windows the new path has no D3D12, so there d3d12 is the legacy renderer
@@ -66,9 +66,9 @@ enum { ROUTE_NONE, ROUTE_LEGACY, ROUTE_D3D12, ROUTE_NULL, ROUTE_VULKAN };
 #define ROUTE_DEFAULT ROUTE_D3D12    /* the new path on D3D12 */
 #define ROUTE_D3D     ROUTE_D3D12
 #elif defined(__SWITCH__)
-/* DemonSoulsNX: the new path on the null backend until the deko3D one; d3d12
- * and legacy are not in the build, so they name the default. */
-#define ROUTE_DEFAULT ROUTE_NULL
+/* DemonSoulsNX: the new path on its deko3D backend (the port's src/gpu), or on
+ * the null one; d3d12 and legacy are not in the build, so they name the default. */
+#define ROUTE_DEFAULT ROUTE_DEKO3D
 #define ROUTE_D3D     ROUTE_DEFAULT
 #define RSX_OUTNX_ROUTE 1
 #else
@@ -109,6 +109,7 @@ static const char* route_name(long r)
     case ROUTE_D3D12:  return "d3d12";
     case ROUTE_NULL:   return "null";
     case ROUTE_VULKAN: return "vulkan";
+    case ROUTE_DEKO3D: return "deko3d";   /* DemonSoulsNX */
     default:           return NULL;
     }
 }
@@ -139,6 +140,12 @@ static long route_pick(void)
 #endif
     } else if (same_name(e, "null")) {
         want = ROUTE_NULL;   /* (developers and CI only: never in Settings) */
+    } else if (same_name(e, "deko3d")) {
+#if defined(RSX_OUTNX_ROUTE)
+        want = ROUTE_DEKO3D;   /* DemonSoulsNX */
+#else
+        other = 1;
+#endif
     } else if (same_name(e, "vulkan")) {
 #if defined(PS3RECOMP_RSX_HAL_VULKAN)
         want = ROUTE_VULKAN;   /* (Settings > Display > Renderer in the port) */
@@ -167,6 +174,8 @@ static long route_pick(void)
         printf("[rsx_out] route null (the new path on the null backend: checks every command, draws nothing)\n");
     else if (want == ROUTE_VULKAN)
         printf("[rsx_out] route vulkan (the new path on its Vulkan backend)\n");
+    else if (want == ROUTE_DEKO3D)   /* DemonSoulsNX */
+        printf("[rsx_out] route deko3d (the new path on its deko3D backend)\n");
     else if (want == ROUTE_LEGACY)
         printf("[rsx_out] route legacy (retired: the renderer before the new path, rsx_d3d12_backend.c, kept to fall"
                " back on)\n");
@@ -196,8 +205,7 @@ static const rsx_route* route_table(void)
     if (r == ROUTE_VULKAN) return &rsxc_route_vk;
 #endif
 #if defined(RSX_OUTNX_ROUTE)
-    (void)r;
-    return &rsxc_route_null;   /* DemonSoulsNX: the only route Horizon has so far */
+    return r == ROUTE_NULL ? &rsxc_route_null : &rsxc_route_dk;   /* DemonSoulsNX: Horizon's two */
 #else
     return r == ROUTE_NULL ? &rsxc_route_null : NULL;
 #endif
@@ -250,6 +258,9 @@ static const rsx_route_gpu* route_gpu(void)
     if (t == &rsxc_route_d3d12) return &rsxc_route_gpu_d3d12;
 #endif
     if (t == &rsxc_route_null) return &rsxc_route_gpu_null;
+#if defined(RSX_OUTNX_ROUTE)
+    if (t == &rsxc_route_dk) return &rsxc_route_gpu_dk;   /* DemonSoulsNX */
+#endif
 #if defined(PS3RECOMP_RSX_HAL_VULKAN)
     if (t == &rsxc_route_vk) return &rsxc_route_gpu_vk;
 #endif

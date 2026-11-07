@@ -21,6 +21,14 @@
 # 0 keeps the whole cache on the SD card, as before (slower). The default is 512.
 #DESNX_CACHE_MEMORY_MB=512
 
+# The renderer: deko3d (the default) or null (checks every command, draws nothing).
+#RSX_BACKEND=null
+
+# deko3D tests (docs/deko3d.md): the first N GPU commands one by one, naming one that faults;
+# and black clears drawn as a slowly changing colour, to see the frames reach the screen.
+#DESNX_DK_TRACE=4000
+#DESNX_DK_TINT=1
+
 # Each port's reads of the pad, in the log.
 #PAD_TRACE=1
 

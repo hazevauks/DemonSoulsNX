@@ -154,6 +154,26 @@ if(DESNX_RUNTIME AND DESNX_HOST)
 	set_property(SOURCE ${SOULBRANDT_PORT}/des_options.cpp ${SOULBRANDT_PORT}/des_menu_sfx.cpp
 		APPEND PROPERTY COMPILE_DEFINITIONS DES_DEV=0)
 	target_link_libraries(desnx_host PUBLIC ps3recomp_runtime)
+
+	# The deko3D backend of the portable renderer and the core compiled for it (stage 12,
+	# docs/deko3d.md), with the built-in passes' shaders uam compiles here and the NRO embeds
+	nx_add_shader_program(blit_vsh src/gpu/shaders/blit_vsh.glsl vert)
+	nx_add_shader_program(blit_fsh src/gpu/shaders/blit_fsh.glsl frag)
+	dkp_add_embedded_binary_library(desnx_gpu_shaders blit_vsh blit_fsh)
+	add_library(desnx_gpu OBJECT src/gpu/gpu_dk.c src/gpu/rsxc_dk.c)
+	set_target_properties(desnx_gpu PROPERTIES C_STANDARD 17)
+	target_include_directories(desnx_gpu BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/src/hos/include)
+	target_include_directories(desnx_gpu PRIVATE
+		${CMAKE_SOURCE_DIR}/src/gpu ${PS3RECOMP}/include ${PS3RECOMP}/libs/video ${PS3RECOMP}/libs/video/gpu
+		${PS3RECOMP}/libs/video/rsxcore ${DEVKITPRO}/portlibs/switch/include)
+	target_compile_options(desnx_gpu PRIVATE
+		-include ${CMAKE_SOURCE_DIR}/src/hos/hos_compat.h
+		-fno-strict-aliasing -ffp-contract=off
+		-Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable)
+	target_compile_definitions(desnx_gpu PRIVATE _GNU_SOURCE PS3RECOMP_RSX_HAL=1)
+	# the shaders' headers for these two files only; their objects go into the game itself (below), as
+	# an object library's own objects reach only a target that lists them
+	target_link_libraries(desnx_gpu PUBLIC ps3recomp_runtime PRIVATE desnx_gpu_shaders)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -201,7 +221,8 @@ if(TARGET desnx_host AND DESNX_PPU_CHUNKS)
 	list(LENGTH DESNX_SPU_CHUNKS DESNX_N_SPU)
 	message(STATUS "Game: ${DESNX_N_PPU} lifted PPU chunks, ${DESNX_N_SPU} lifted SPU images")
 
-	add_executable(demonsouls_game ${DESNX_GAME_SOURCES} src/platform/nx_guest_fault.s)
+	add_executable(demonsouls_game ${DESNX_GAME_SOURCES} src/platform/nx_guest_fault.s
+		$<TARGET_OBJECTS:desnx_gpu_shaders>)
 	set_target_properties(demonsouls_game PROPERTIES C_STANDARD 17 CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 	target_include_directories(demonsouls_game BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/src/hos/include)
 	target_include_directories(demonsouls_game PRIVATE
@@ -217,7 +238,7 @@ if(TARGET desnx_host AND DESNX_PPU_CHUNKS)
 		-Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-label
 		-Wno-unused-but-set-variable)
 	target_compile_definitions(demonsouls_game PRIVATE _GNU_SOURCE DS_NO_SHADOW_STACK)
-	target_link_libraries(demonsouls_game PRIVATE desnx_host desnx_platform nx m)
+	target_link_libraries(demonsouls_game PRIVATE desnx_host desnx_gpu desnx_platform nx m)
 	# libnx's start code calls nx_game_main.c's __wrap_main, which sets up the Switch and then runs
 	# the boot's main; and host stacks are capped at 16 MB, as libnx takes a whole stack from the heap.
 	# nx_game_sdl.c: cellAudio's device buffer and cellPad's controllers, as the Switch's SDL2 needs
