@@ -188,6 +188,7 @@ struct gpu_cmd {
     uint32_t      barrier;         /* invalidate flags waiting for the next draw, clear or copy */
     uint32_t      desc_epoch;
     uint32_t      idx_size;        /* the bound index buffer's bytes per index */
+    uint32_t      drawn;           /* targets written since the last barrier (pass_barrier) */
 };
 
 typedef struct DkDev {
@@ -1650,6 +1651,21 @@ static void trace(gpu_cmd* c, const char* fmt, ...)
     if (s_trace && s_traced == (uint32_t)s_trace) printf("[dk] trace: %u commands, none faulted\n", s_traced);
 }
 
+/* A barrier before what may read what the last targets were given: a pass on other targets, a
+ * copy or a resolve. D3D12 lets the core leave some out (a texture rendered to, then read, with
+ * implicit state changes); on deko3D a read before the GPU has written its tiles out shows the
+ * old contents in squares and stripes. DESNX_DK_PASS_BARRIER=0 leaves it to the core's own. */
+static void pass_barrier(gpu_cmd* c)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char* e = getenv("DESNX_DK_PASS_BARRIER");
+        on = !(e && *e == '0');
+    }
+    if (on && c->drawn) c->barrier |= 0x80000000u | DkInvalidateFlags_Image;
+    c->drawn = 0;
+}
+
 static void bind_pass(gpu_cmd* c)
 {
     DkImageView const* colours[4];
@@ -1660,6 +1676,7 @@ static void bind_pass(gpu_cmd* c)
 void gpu_dk_cmd_pass_begin(gpu_cmd* c, const gpu_pass* pass)
 {
     DkDev* dd = DD(c->head.dev);
+    if (memcmp(&c->pass, pass, sizeof *pass)) pass_barrier(c);
     c->pass = *pass;
     c->nrt = 0;
     for (uint32_t i = 0; i < pass->nrt && i < 4; i++) {
@@ -1741,6 +1758,7 @@ void gpu_dk_cmd_clear_color(gpu_cmd* c, gpu_view rtv, const float rgba_in[4], co
     }
     clear_scissor(c, dd, v, rect);
     dkCmdBufClearColorFloat(c->cb, at < 0 ? 0 : (uint32_t)at, DkColorMask_RGBA, rgba[0], rgba[1], rgba[2], rgba[3]);
+    c->drawn = 1;
     restore_scissor(c);
     if (at < 0) bind_pass(c);
     trace(c, "clear_color: view %u (texture %u, format %u, %ux%u)%s", rtv.id, v->tex + 1, dd->tex[v->tex].format,
@@ -1757,6 +1775,7 @@ void gpu_dk_cmd_clear_depth(gpu_cmd* c, gpu_view dsv, uint32_t flags, float dept
     if (!bound) dkCmdBufBindRenderTargets(c->cb, NULL, 0, &v->view);
     clear_scissor(c, dd, v, rect);
     dkCmdBufClearDepthStencil(c->cb, (flags & GPU_CLEAR_DEPTH) != 0, depth, (flags & GPU_CLEAR_STENCIL) ? 0xFF : 0, stencil);
+    c->drawn = 1;
     restore_scissor(c);
     if (!bound) bind_pass(c);
     trace(c, "clear_depth: view %u (format %u)%s", dsv.id, dd->tex[v->tex].format, bound ? "" : ", not bound");
@@ -1957,6 +1976,7 @@ void gpu_dk_cmd_draw(gpu_cmd* c, uint32_t vertices, uint32_t instances, uint32_t
     if (!c->pipeline) return;
     before_draw(c);
     dkCmdBufDraw(c->cb, c->prim, vertices, instances ? instances : 1, first_vertex, first_instance);
+    c->drawn = 1;
     trace(c, "draw: %u vertices from %u, primitive %u, pipeline %u", vertices, first_vertex, (unsigned)c->prim, c->pipeline);
 }
 
@@ -1966,6 +1986,7 @@ void gpu_dk_cmd_draw_indexed(gpu_cmd* c, uint32_t indices, uint32_t instances, u
     if (!c->pipeline) return;
     before_draw(c);
     dkCmdBufDrawIndexed(c->cb, c->prim, indices, instances ? instances : 1, first_index, base_vertex, first_instance);
+    c->drawn = 1;
     trace(c, "draw_indexed: %u indices from %u, base %d, pipeline %u", indices, first_index, base_vertex, c->pipeline);
 }
 
@@ -2034,7 +2055,10 @@ void gpu_dk_cmd_copy_texture(gpu_cmd* c, gpu_texture dst, uint32_t dst_sub, uint
         sr.height = box->bottom - box->top;
     }
     const DkImageRect dr = {x, y, dl + z, sr.width, sr.height, 1};
+    pass_barrier(c);
+    flush_barrier(c);
     dkCmdBufCopyImage(c->cb, &sv, &sr, &dv, &dr, 0);
+    c->drawn = 1;
     trace(c, "copy_texture: %u (format %u) sub %u %ux%u at %u,%u to %u (format %u) sub %u at %u,%u,%u", src.id, s->format,
           src_sub, sr.width, sr.height, sr.x, sr.y, dst.id, d->format, dst_sub, x, y, dr.z);
 }
@@ -2068,7 +2092,10 @@ void gpu_dk_cmd_copy_buf_to_tex(gpu_cmd* c, gpu_texture dst, uint32_t dst_sub, u
     const uint32_t rows = t->block ? (from->height + 3) / 4 : from->height;
     const DkCopyBuf cb = {b->gpu + from->offset, from->row_pitch, rows};
     const DkImageRect r = {x, y, layer + z, w, h, 1};
+    pass_barrier(c);
+    flush_barrier(c);
     dkCmdBufCopyBufferToImage(c->cb, &cb, &v, &r, 0);
+    c->drawn = 1;
     trace(c, "copy_buf_to_tex: buffer %u (%llu bytes) at %llu, pitch %u, %u rows, to %u (format %u, %ux%u) sub %u, %ux%u at %u,%u,%u",
           src.id, (unsigned long long)b->size, (unsigned long long)from->offset, from->row_pitch, rows, dst.id, t->format,
           t->width, t->height, dst_sub, w, h, x, y, r.z);
@@ -2095,7 +2122,10 @@ void gpu_dk_cmd_copy_tex_to_buf(gpu_cmd* c, gpu_buffer dst, const gpu_footprint*
     }
     const uint32_t rows = t->block ? (r.height + 3) / 4 : r.height;
     const DkCopyBuf cb = {b->gpu + to->offset, to->row_pitch, rows};
+    pass_barrier(c);
+    flush_barrier(c);
     dkCmdBufCopyImageToBuffer(c->cb, &v, &r, &cb, 0);
+    c->drawn = 1;
     trace(c, "copy_tex_to_buf: %u (format %u) sub %u, %ux%u at %u,%u, to buffer %u (%llu bytes) at %llu, pitch %u", src.id,
           t->format, src_sub, r.width, r.height, r.x, r.y, dst.id, (unsigned long long)b->size,
           (unsigned long long)to->offset, to->row_pitch);
@@ -2126,7 +2156,10 @@ void gpu_dk_cmd_resolve(gpu_cmd* c, gpu_texture dst, uint32_t dst_sub, gpu_textu
     uint32_t sl, dl;
     copy_view(s, src_sub, &sv, &sl);
     copy_view(d, dst_sub, &dv, &dl);
+    pass_barrier(c);
+    flush_barrier(c);
     dkCmdBufResolveImage(c->cb, &sv, &dv);
+    c->drawn = 1;
     trace(c, "resolve: %u to %u", src.id, dst.id);
 }
 

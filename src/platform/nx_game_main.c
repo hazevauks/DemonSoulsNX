@@ -38,6 +38,7 @@
 #include "nx_game_threads.h"
 #include "nx_guest.h"
 #include "nx_log.h"
+#include "nx_osk.h"
 #include "nx_paths.h"
 #include "nx_settings.h"
 #include "nx_system.h"
@@ -264,6 +265,7 @@ int __wrap_main(int argc, char **argv)
      * still wins. */
     if (!getenv("DES_PRECOMPILE"))
         setenv("DES_PRECOMPILE", "0", 1);
+    nx_osk_init();          /* the PS3's on-screen keyboard as the Switch's */
     NxSystem system;
     nx_system_read(&system);
     nx_system_log(&system);

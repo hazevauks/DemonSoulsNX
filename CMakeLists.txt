@@ -142,6 +142,7 @@ if(DESNX_RUNTIME AND DESNX_HOST)
 		${CMAKE_SOURCE_DIR}/src/platform/nx_game_threads.c   # detached threads, which libnx lacks
 		${CMAKE_SOURCE_DIR}/src/platform/nx_game_io.c        # the game's file I/O, counted
 		${CMAKE_SOURCE_DIR}/src/platform/nx_cache_mem.c      # the game's cache (/dev_hdd1) in memory
+		${CMAKE_SOURCE_DIR}/src/platform/nx_osk.c            # the PS3's on-screen keyboard, the Switch's
 	)
 	set_property(SOURCE ${CMAKE_SOURCE_DIR}/src/platform/nx_game_main.c
 		APPEND PROPERTY COMPILE_DEFINITIONS DESNX_VERSION="${PROJECT_VERSION}")

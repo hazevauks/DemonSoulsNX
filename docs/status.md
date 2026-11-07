@@ -227,6 +227,15 @@ GLSL and DKSH, `src/gpu/gpu_dk_sc.cpp`, docs/deko3d.md), cached on the SD card:
 | The next run, those programs on the SD card | character creation compiled four more of its vertex programs (11 to 16 seconds each), then ran at 30 frames a second, took the d-pad and Circle, and **was drawn perfectly**: it lightened after a moment and the models came, with their textures |
 | The sound | the mixer at 48,000 frames a second, its queue never empty; on the console a strong hiss in the game's sound, not in the numbers. It was there before stage 12 too |
 
+The stage 13 test, the same day: a new character, named, into the first level:
+
+| What | Result |
+| --- | --- |
+| The name at character creation | the Switch's keyboard (`src/platform/nx_osk.c`, on ps3recomp's on-screen keyboard host): "joy" typed and taken. Before it, the PS3's keyboard answered at once with an empty name |
+| The first level | **the tutorial played**: the knight in the Boletarian palace's canal, its light, fog and water, the HUD, the first enemy killed; the loading screen too. About 10 to 16 frames a second there, and the first entry's compiles held the frames for some minutes in all (17 programs compiled, 34 from the SD card) |
+| What is wrong on the screen | thin white lines down the whole picture at the same columns, in the level and on the loading screen, and small white squares that flash down it for an instant |
+| Other lines in the log | `Multistream: atrac failed to load` (a sound stream); a save could not write its icon (`ICON0.PNG`) and kept the old one |
+
 ## Not checked yet
 
 How late the sound is with 1024-frame buffers: two of them in the audio renderer (43 ms) and
@@ -294,7 +303,7 @@ Soulbrandt's notes name. The game goes on to its title screen past both.
 | 10. Crash triage: alignment faults, missing system calls, null pointers | **done**: a crash writes `SD_LOG/demonsouls_crash.txt` (the fault decoded, registers, call stack, the PS3 code), `abort` and `assert` too, and `tools/crash_symbolize.py` names its addresses; the log summary lists the runtime's missing functions and system calls, unlifted calls and the guest's null pointers. Checked on the console with a crash on purpose; no alignment fault has happened yet |
 | 11. Asset loading: archives, materials, shaders, streaming | **done** to the title screen: where both forms of a file are on the disc, the game opens the `.dcx` (114 of 114, none of the 3 GB of raw twins). The game's file reads and writes are counted by the disc, the cache and the saves: the cache's copies took 10.4 s of writing on the SD card, so the cache is now in memory (32 ms, 52 MB). A load into the Nexus, with the cache read back and a level streaming in, comes after stage 12, when the screen shows where the game is |
 | 12. Native deko3D renderer | **done**, in four steps (docs/engine.md): the portable renderer's core on the Switch (12a), the deko3D backend `src/gpu` (12b), the game's shaders compiled on the console and kept on the SD card (12c), its draws, vertex input and textures (12d). The disclaimer, the title menu, New Game and character creation are drawn, the last perfectly, at 30 frames a second. A program's first compile holds the frames, once: most under half a second, the longest vertex programs 11 to 22 seconds |
-| 13. The game's passes: deferred lighting, shadows, post-processing, fog | to do |
+| 13. The game's passes: deferred lighting, shadows, post-processing, fog | **in progress**: the tutorial level is drawn, its light, fog and water right; thin white lines and flashing squares remain |
 | 14. Surfaces, framebuffers, textures, geometry buffers | to do |
 | 15. Render pass, lighting, particle and post-processing tuning | to do |
 | 16. Frames and timings against targets: Nexus, Boletaria, Stonefang, HUD, phantoms, cutscenes | to do |
