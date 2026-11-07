@@ -99,10 +99,12 @@ screen at 30 a second.
 ## Not done yet
 
 - Compiles on the thread that draws: a long one holds the frames, once (it is then on the SD
-  card). The longest so far, vertex programs that read their own vertices, take 3 to 22
+  card). The longest so far, vertex programs that read their own vertices, take 11 to 22
   seconds, after their fetch is cut down to the attributes they read (`rsxc_dk.c`); most
-  programs take under half a second.
-- Character creation is dark; the game's draws, vertex input and textures are 12d.
+  programs take under half a second. Compiling on a worker, or ahead of the game, needs the
+  core to draw without a program for a while and try it again later.
+- Formats checked on the screen so far: the menus' and character creation's (RGBA8, BC, depth);
+  B5G6R5, B5G5R5A1 and B4G4R4A4 are mapped from their names and not yet seen.
 - Barriers are coarse: any gathered barrier waits for all the GPU's work before it.
 - Placed textures and memory given back are not zeroed as gpu.h asks of a texture's own memory.
 - No GPU timings (`gpu_ns`), no present statistics, no pipeline cache (deko3D has no pipeline
