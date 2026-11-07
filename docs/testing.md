@@ -18,7 +18,8 @@ switch/demonsouls/
   firmware/        libsre_image.bin, made from your firmware's libsre.prx
   settings.txt     options for the game, see below
   hdd0/            the PS3's drive (/dev_hdd0): saves; made by the port
-  hdd1/            the game's cache (/dev_hdd1); made by the port
+  hdd1/            the game's cache (/dev_hdd1) with DESNX_CACHE_MEMORY_MB=0; else it is in memory
+  hdd1_spill/      the cache's files past the memory it may use, if any; made by the port
   SD_LOG/          the logs, written by the port
 ```
 
@@ -94,6 +95,11 @@ python tools/crash_symbolize.py [SD_LOG/demonsouls_crash.txt]
 
 names each one from the ELF of the build the console ran: `func_<PS3 address>` for lifted code.
 `DESNX_CRASH_TEST=<seconds>` crashes the game on purpose then, to try all of it.
+
+Atmosphère's blue screen with no new `demonsouls_crash.txt` is another process's crash: a system
+service the game leans on, for one. Its report is the newest file in `sd:/atmosphere/crash_reports/`,
+named by the time and the program's ID; copy it into `SD_LOG/crash_reports/` (nothing in `SD_LOG`
+goes into git). The one in the stage 11 tests was `hid`'s (docs/status.md).
 
 ## Reading a log
 

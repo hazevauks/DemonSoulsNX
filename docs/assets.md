@@ -86,7 +86,7 @@ only has to map the PS3's drives onto folders of the SD card:
 | --- | --- |
 | `/dev_bdvd/...`, `/app_home/...` (the disc) | `sdmc:/switch/demonsouls/game/...` |
 | `/dev_hdd0/...` (the PS3's drive: saves) | `sdmc:/switch/demonsouls/hdd0/...` |
-| `/dev_hdd1/...` (the game's cache, emptied at every start) | `sdmc:/switch/demonsouls/hdd1/...` |
+| `/dev_hdd1/...` (the game's cache, emptied at every start) | in memory, up to `DESNX_CACHE_MEMORY_MB` (512), then `sdmc:/switch/demonsouls/hdd1_spill/`; with 0, `sdmc:/switch/demonsouls/hdd1/...` |
 | `/dev_flash`, `/dev_usb`, a path out of a drive | refused |
 
 ## What has to be decrypted on the PC

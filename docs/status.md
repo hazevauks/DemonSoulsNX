@@ -171,6 +171,26 @@ The stage 10 test, the same day: the game sent with `--set DESNX_CRASH_TEST=30`:
 | `SD_LOG/demonsouls_crash.txt` | written: "a data access fault, translation fault: nothing is mapped there, writing; address 0x8, near zero: a null pointer", ESR 0x92000046, all the registers, four frames of call stack, and "the PS3 code: none on this thread" (the log's own thread) |
 | Its addresses, named on the PC | pc `watch_thread+0x1c4`, the write itself, lr `watch_thread+0x1b4`, then libnx's `__thread_entry` and `_EntryWrap`: the whole stack, right |
 
+The stage 11 tests, 2026-11-06 and 07: two runs of the game's NRO to the title screen, Start and
+Cross, the first with the game's cache on the SD card, the second with it in memory
+(`nx_cache_mem.c`):
+
+| What | The cache on the SD card | The cache in memory |
+| --- | --- | --- |
+| Read from the disc, to the title screen | 103 MB in 5.5 s (19 MB/s, 1,889 reads, 314 files) | 103 MB in 5.0 s (21 MB/s, 1,889 reads, 314 files) |
+| Copies written to the cache | 39 MB in 10.4 s (4 MB/s, 850 writes, 139 files) | 39 MB in 32 ms (850 writes, 139 files) |
+| All 139 copies made | by the log's line at 40 seconds | by its line at 30 seconds |
+| Memory the cache holds | | 49 MB of its 512 at the title screen, 52 MB after the menu |
+| Read back from the cache | nothing yet: the title screen loads each file once | the same |
+| The end | 87 seconds in, the system's blue screen (below) | closed from the HOME menu after 130 seconds |
+
+The blue screen came from the system, not the game: Atmosphère's crash report names `hid`, the
+service that reads the controllers, with an undefined instruction where its code holds a valid one
+(`stur x11, [x8, #-26]`). The processor ran something other than what memory held, which points at
+the hardware under load (the game keeps three cores busy). That console had an overclocking module
+loaded, at the stock clocks. The game's own crash report was not written, since the game did not
+crash. The same build had run 90 seconds before without it, and the next run 130.
+
 ## Not checked yet
 
 How late the sound is with 1024-frame buffers: two of them in the audio renderer (43 ms) and
@@ -180,10 +200,14 @@ cellAudio gets its own audio renderer voice with more, smaller buffers in the qu
 Which controller slots are connected: SDL2 lists all eight, and stage 7 has cellPad report only
 the ones in use.
 
-The game's cache on the SD card. The game copies files it loads into `/dev_hdd1` and reads the
-copies on later loads (Soulbrandt's docs/101: 173 copies during the load into 1-1). On the PS3
-that saved the disc's seeks; here the copies come from the same SD card, and writing runs at
-10 MB/s. Stage 11 measures what it costs a load, and the cache may move to memory.
+The game's cache in a level. The game copies files it loads into `/dev_hdd1` and reads the
+copies on later loads (Soulbrandt's docs/101: 173 copies during the load into 1-1, about 1,000
+files and 340 MB in a long session). It is now in memory, up to 512 MB, and files past that go to
+the SD card; the title screen fills 52 MB and reads none back. A load into the Nexus and a level,
+with the cache's reads and the memory it takes, has not been on the console yet.
+
+The system's blue screen in `hid` (the stage 11 tests): once so far, on a console with an
+overclocking module loaded. If it comes back, the next run is without the module.
 
 Which of the two copies the game opens (raw or `.dcx`): the runtime's log of opened files, on the
 first boot of the game.
@@ -229,7 +253,7 @@ Soulbrandt's notes name. The game goes on to its title screen past both.
 | 8. First boot of the game, with a fallback renderer | **done**: on the null renderer the game boots to its title screen and runs its loop at about 11 frames a second, with its sound; Start and Cross reach it, it makes its save and plays its menu sounds. Nothing is drawn on the screen until the deko3D renderer (stage 12), and the movies need FFmpeg |
 | 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | **done**: the logs in `SD_LOG`, whole and readable; `tools/nxlink_run.py` sends an NRO to its place on the SD card and keeps its live log on the PC; `settings.txt` sets the runtime's options; `tools/summarize_log.py` sums a log up |
 | 10. Crash triage: alignment faults, missing system calls, null pointers | **done**: a crash writes `SD_LOG/demonsouls_crash.txt` (the fault decoded, registers, call stack, the PS3 code), `abort` and `assert` too, and `tools/crash_symbolize.py` names its addresses; the log summary lists the runtime's missing functions and system calls, unlifted calls and the guest's null pointers. Checked on the console with a crash on purpose; no alignment fault has happened yet |
-| 11. Asset loading: archives, materials, shaders, streaming | **in progress**: where both forms of a file are on the disc, the game opens the `.dcx` (114 of 114 to the title screen, none of the 3 GB of raw twins). The game's file reads and writes are now counted by the disc, the cache and the saves, to see what the cache's copies cost on the SD card; waits for a console run |
+| 11. Asset loading: archives, materials, shaders, streaming | **in progress**: where both forms of a file are on the disc, the game opens the `.dcx` (114 of 114 to the title screen, none of the 3 GB of raw twins). The game's file reads and writes are counted by the disc, the cache and the saves: the cache's copies took 10.4 s of writing on the SD card to the title screen, so the cache is now in memory (32 ms, 52 MB). Left: a load into the Nexus, to see the cache read back and level streaming |
 | 12. Native deko3D renderer | to do |
 | 13. The game's passes: deferred lighting, shadows, post-processing, fog | to do |
 | 14. Surfaces, framebuffers, textures, geometry buffers | to do |

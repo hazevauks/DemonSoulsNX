@@ -8,7 +8,8 @@
  *
  * The game copies what it loads into its cache, which the runtime empties at every start, as the
  * PS3 does: on the PS3 that spared the disc drive its seeks, while here both are the same SD card.
- * These figures say what the copies cost a load (stage 11).
+ * These figures said what the copies cost a load (stage 11), and the cache moved to memory
+ * (nx_cache_mem.c); its files count as the cache on either drive.
  */
 
 #include <reent.h>
@@ -44,7 +45,7 @@ static int kind_of(const char *path)
         return -1;
     if (strstr(path, NX_GAME_DIR "/") == path)
         return NX_IO_DISC;
-    if (strstr(path, NX_HDD1_DIR "/") == path)
+    if (strstr(path, NX_HDD1_DIR "/") == path || strstr(path, NX_HDD1_MEM_DIR "/") == path)
         return NX_IO_CACHE;
     if (strstr(path, NX_HDD0_DIR "/") == path)
         return NX_IO_SAVES;

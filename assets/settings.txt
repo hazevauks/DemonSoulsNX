@@ -17,6 +17,10 @@
 # The runtime's per-event lines in the log (1), or none (0). More lines, a slower game.
 #PS3_VERBOSE=1
 
+# The memory the game's cache (/dev_hdd1) may use, in MB; files past it go to the SD card.
+# 0 keeps the whole cache on the SD card, as before (slower). The default is 512.
+#DESNX_CACHE_MEMORY_MB=512
+
 # Each port's reads of the pad, in the log.
 #PAD_TRACE=1
 

@@ -30,6 +30,7 @@
 #include "ps3emu/ppu_lift.h"
 
 #include "../hos/hos_guest.h"
+#include "nx_cache_mem.h"
 #include "nx_crash.h"
 #include "nx_data.h"
 #include "nx_game_io.h"
@@ -213,6 +214,7 @@ static void *watch_thread(void *arg)
         nx_log("frames: %u in the last 10 s, %u in all\n", flips - last_flips, flips);
         last_flips = flips;
         nx_game_io_report();
+        nx_cache_mem_report();
         nx_game_sdl_report();
         NxThreadStats detached;
         nx_game_threads_stats(&detached);
@@ -254,6 +256,7 @@ int __wrap_main(int argc, char **argv)
     nx_vfs_init();
     nx_settings_load();     /* after the drives, so a setting may name another */
     nx_settings_args(argc, argv);
+    nx_cache_mem_init();    /* /dev_hdd1 in memory, unless a setting says otherwise */
     NxSystem system;
     nx_system_read(&system);
     nx_system_log(&system);
