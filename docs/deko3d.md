@@ -92,11 +92,16 @@ screen at 30 a second.
 | `DESNX_DK_SHADER_TIMES=1` | each compile's steps and their times in the log (without it, only compiles over half a second) |
 | `DESNX_DK_SHADER_DUMP=1` | the GLSL of a program uam refuses, in the log |
 | `DESNX_DK_CACHE=0` | every program compiled again, not read from the SD card's cache (still written there) |
+| `DESNX_DK_CONSERVATIVE=0` or `1` | Mesa's optimization loops run to their end, or once each, for every program (default: once past 20 KB of GLSL) |
+| `DESNX_DK_UAM_OPT_BIG=<0-3>` | nouveau's optimization level for a program past 20 KB of GLSL (default 3) |
 | `DES_PRECOMPILE=1` | Soulbrandt's shader pass at the start, for the spv target's cache (off by default here) |
 
 ## Not done yet
 
-- Compiles on the thread that draws: a long one holds the frames (up to 90 seconds so far).
+- Compiles on the thread that draws: a long one holds the frames, once (it is then on the SD
+  card). The longest so far, vertex programs that read their own vertices, take 3 to 22
+  seconds, after their fetch is cut down to the attributes they read (`rsxc_dk.c`); most
+  programs take under half a second.
 - Character creation is dark; the game's draws, vertex input and textures are 12d.
 - Barriers are coarse: any gathered barrier waits for all the GPU's work before it.
 - Placed textures and memory given back are not zeroed as gpu.h asks of a texture's own memory.

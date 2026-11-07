@@ -154,14 +154,30 @@ extern "C" int gpu_dk_sc_dksh(gpu_sc_stage stage, const uint32_t* words, size_t 
                         : stage == GPU_SC_GS ? pipeline_stage_geometry : pipeline_stage_vertex;
     std::lock_guard<std::mutex> hold(s_lock);
     clock_gettime(CLOCK_MONOTONIC, &t1);
-    DekoCompiler dc(ps, 3);
+    /* nouveau's optimization level: 3, as uam's own default; DESNX_DK_UAM_OPT_BIG=<0-3> for a
+     * program of more than 20 KB of GLSL (a test of what the level costs a long compile) */
+    int opt = 3;
+    const bool big = glsl.size() > 20000;
+    if (big) {
+        const char* e = getenv("DESNX_DK_UAM_OPT_BIG");
+        if (e && *e >= '0' && *e <= '3') opt = *e - '0';
+    }
+    /* Mesa's optimization loops once each for a program of more than 20 KB of GLSL: run to
+     * their end, they took 14 of a long vertex program's 19 seconds, and nouveau optimizes
+     * the code after them anyway. DESNX_DK_CONSERVATIVE=0 or 1: never or always. */
+    const char* cons = getenv("DESNX_DK_CONSERVATIVE");
+    const bool conservative = cons && *cons ? *cons != '0' : big;
+    DekoCompiler::SetOptimizeConservatively(conservative);
+    DekoCompiler dc(ps, opt);
     const bool compiled = dc.CompileGlsl(glsl.c_str());
     clock_gettime(CLOCK_MONOTONIC, &t2);
     const double cross_ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
     const double uam_ms = (double)(t2.tv_sec - t1.tv_sec) * 1e3 + (double)(t2.tv_nsec - t1.tv_nsec) / 1e6;
     if (cross_ms + uam_ms > 500.0 || getenv("DESNX_DK_SHADER_TIMES"))
-        printf("[dk] shader %s: SPIRV-Cross %.0f ms, uam %.0f ms (%zu SPIR-V words, %zu bytes of GLSL)\n",
-               stage == GPU_SC_PS ? "ps" : stage == GPU_SC_GS ? "gs" : "vs", cross_ms, uam_ms, nwords, glsl.size());
+        printf("[dk] shader %s: SPIRV-Cross %.0f ms, uam %.0f ms (Mesa's GLSL %.0f%s, nouveau at level %d %.0f; %zu "
+               "SPIR-V words, %zu bytes of GLSL)\n",
+               stage == GPU_SC_PS ? "ps" : stage == GPU_SC_GS ? "gs" : "vs", cross_ms, uam_ms, dc.m_msFrontend,
+               conservative ? " once" : "", opt, dc.m_msCodegen, nwords, glsl.size());
     if (!compiled) {
         say(msg, cap, "uam could not compile the GLSL SPIRV-Cross made (%s)", glsl.substr(0, 160));
         if (getenv("DESNX_DK_SHADER_DUMP")) fprintf(stderr, "[dk] the GLSL uam refused:\n%s\n", glsl.c_str());

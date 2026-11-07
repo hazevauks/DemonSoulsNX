@@ -22,6 +22,7 @@
 #include "gpu_shader_spv.h"
 #include "gpu_dk_sc.h"
 
+#include <ctype.h>
 #include <sys/stat.h>
 
 #include "blit_fsh_dksh.h"
@@ -107,7 +108,7 @@ static int dk_cache_file(gpu_sc_stage stage, const char* src, size_t n, const ch
     char tag[512];
     gpu_spv_tag(layout, tag, sizeof tag);
     u64 h = 14695981039346656037ull;
-    static const char version[] = "dksh 1: spirv-cross glsl 460 flip-y, uam 1.1.0;";
+    static const char version[] = "dksh 2: spirv-cross glsl 460 flip-y, uam 1.1.0 level 3, mesa once past 20 KB;";
     h = dk_fnv(h, version, sizeof version - 1);
     h = dk_fnv(h, tag, strlen(tag));
     const u32 st = (u32)stage;
@@ -159,6 +160,10 @@ static void dk_count(int made, double ms)
                (long)m, m ? s_dk_ms / (double)m : 0.0, (long)s_dk_hits, (long)s_dk_failed);
 }
 
+static char* dk_fetch_loops(const char* src, size_t n);
+static int dk_compile(gpu_sc_stage stage, const char* src, size_t n, const char* name, const char* entry,
+                      unsigned flags, const gpu_layout_desc* layout, gpu_sc_blob* out, char* msg, size_t cap);
+
 static int rc_be_sc_compile(gpu_sc_stage stage, const char* src, size_t n, const char* name, const char* entry,
                             unsigned flags, const gpu_layout_desc* layout, gpu_sc_blob* out, char* msg, size_t cap)
 {
@@ -172,6 +177,72 @@ static int rc_be_sc_compile(gpu_sc_stage stage, const char* src, size_t n, const
         }
     if (!src) return 0;
     /* everything else, the core's other built-in passes too, through the chain */
+    char* edited = dk_fetch_loops(src, n);
+    if (edited) {
+        src = edited;
+        n = strlen(edited);
+    }
+    const int rc = dk_compile(stage, src, n, name, entry, flags, layout, out, msg, cap);
+    free(edited);
+    return rc;
+}
+
+/* The vertex fetch of a guest vertex program that reads its own vertices (rsx_vp_decompiler.c's
+ * fetch mode): it fetched all 16 attributes, unrolled, each with its 4 components times every
+ * format's loads unrolled too. That made the SPIR-V 25 times its usual size and kept all 16
+ * attributes live beside the program's 32 registers and 16 outputs, and uam took 66 to 89
+ * seconds on one program. Here only the attributes the program reads are fetched, one line
+ * each, and the components' loop stays a loop. The same values either way. NULL when the text
+ * is not a fetch program. */
+static char* dk_fetch_loops(const char* src, size_t n)
+{
+    static const char k_all[] = "[unroll] for (uint _k = 0u; _k < 16u; _k++) v[_k] = vf_fetch(_k, input.vid);";
+    char used[16 * 48] = "";
+    const char* loop = NULL;
+    for (size_t p = 0; p + sizeof k_all - 1 <= n && !loop; p++)
+        if (!memcmp(src + p, k_all, sizeof k_all - 1)) loop = src + p;
+    if (loop) {   /* the attributes read after it: v[0] to v[15] */
+        unsigned mask = 0;
+        for (const char* p = loop + sizeof k_all - 1; p + 3 < src + n; p++)
+            if (p[0] == 'v' && p[1] == '[' && p[2] >= '0' && p[2] <= '9' && (p == src || !isalnum((unsigned char)p[-1]))) {
+                unsigned k = (unsigned)(p[2] - '0');
+                if (p[3] >= '0' && p[3] <= '9') k = k * 10u + (unsigned)(p[3] - '0');
+                if (k < 16) mask |= 1u << k;
+            }
+        size_t u = 0;
+        for (unsigned k = 0; k < 16; k++)
+            if (mask & (1u << k))
+                u += (size_t)snprintf(used + u, sizeof used - u, "v[%u] = vf_fetch(%uu, input.vid); ", k, k);
+        if (!u) snprintf(used, sizeof used, "v[0] = float4(0, 0, 0, 1);");
+    }
+    const char* const from[] = {loop ? k_all : NULL, "[unroll] for (uint c = 0u; c < 4u; c++) {"};
+    const char* const to[] = {used, "[loop] for (uint c = 0u; c < 4u; c++) {"};
+    if (!loop) return NULL;
+    char* t = NULL;
+    for (int i = 0; i < 2; i++) {
+        const char* text = t ? t : src;
+        const size_t len = t ? strlen(t) : n;
+        const char* at = NULL;
+        const size_t fl = strlen(from[i]);
+        for (size_t p = 0; p + fl <= len && !at; p++)
+            if (!memcmp(text + p, from[i], fl)) at = text + p;
+        if (!at) continue;
+        const size_t tl = strlen(to[i]), off = (size_t)(at - text);
+        char* nt = (char*)malloc(len - fl + tl + 1);
+        if (!nt) break;
+        memcpy(nt, text, off);
+        memcpy(nt + off, to[i], tl);
+        memcpy(nt + off + tl, at + fl, len - off - fl);
+        nt[len - fl + tl] = 0;
+        free(t);
+        t = nt;
+    }
+    return t;
+}
+
+static int dk_compile(gpu_sc_stage stage, const char* src, size_t n, const char* name, const char* entry,
+                      unsigned flags, const gpu_layout_desc* layout, gpu_sc_blob* out, char* msg, size_t cap)
+{
     const gpu_layout_desc* const lay = layout ? layout : gpu_spv_guest_layout();
     char path[600];
     const int cached = dk_cache_file(stage, src, n, entry, lay, path, sizeof path);

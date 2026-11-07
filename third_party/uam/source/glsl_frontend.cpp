@@ -340,6 +340,11 @@ void glsl_frontend_init()
 	initialize_context(&gl_ctx, API_OPENGL_CORE);
 }
 
+void glsl_frontend_set_conservative(bool on)
+{
+	gl_ctx.Const.GLSLOptimizeConservatively = on;
+}
+
 void glsl_frontend_exit()
 {
 #ifdef DESNX_UAM_LIBRARY

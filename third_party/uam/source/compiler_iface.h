@@ -40,9 +40,14 @@ public:
 	~DekoCompiler();
 
 	bool CompileGlsl(const char* glsl);
+	// DemonSoulsNX: Mesa's optimization loops run once each for the compiles that follow (a long
+	// program's front end then takes a fraction of its time; nouveau optimizes the code again)
+	static void SetOptimizeConservatively(bool on);
 	void OutputDksh(const char* dkshFile);
 	// DemonSoulsNX: the same bytes into memory (malloc'd, for free()), for uam linked into a program
 	bool OutputDkshToMemory(void** data, size_t* size);
+	// DemonSoulsNX: the last CompileGlsl's two halves, in ms: Mesa's GLSL to TGSI, nouveau's code
+	double m_msFrontend = 0, m_msCodegen = 0;
 	void WriteDksh(FILE* f);
 	void OutputRawCode(const char* rawFile);
 	void OutputTgsi(const char* tgsiFile);

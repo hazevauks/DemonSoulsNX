@@ -1,4 +1,5 @@
 #include "compiler_iface.h"
+#include <time.h> // DemonSoulsNX: the compile's times
 
 namespace
 {
@@ -289,16 +290,35 @@ DekoCompiler::~DekoCompiler()
 	glsl_frontend_exit();
 }
 
+// DemonSoulsNX: the two halves' times (m_msFrontend, m_msCodegen)
+static double ms_since(const struct timespec& a)
+{
+	struct timespec b;
+	clock_gettime(CLOCK_MONOTONIC, &b);
+	return (double)(b.tv_sec - a.tv_sec) * 1e3 + (double)(b.tv_nsec - a.tv_nsec) / 1e6;
+}
+
+void DekoCompiler::SetOptimizeConservatively(bool on)
+{
+	glsl_frontend_init();
+	glsl_frontend_set_conservative(on);
+}
+
 bool DekoCompiler::CompileGlsl(const char* glsl)
 {
+	struct timespec t0;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
 	m_glsl = glsl_program_create(glsl, m_stage);
+	m_msFrontend = ms_since(t0);
 	if (!m_glsl) return false;
 
 	m_tgsi = glsl_program_get_tokens(m_glsl, m_tgsiNumTokens);
 	m_info.bin.source = m_tgsi;
 	m_info.bin.smemSize = glsl_program_compute_get_shared_size(m_glsl); // Total size of glsl shared variables. (translation process doesn't actually need this, but for the sake of consistency with nouveau, we keep this value here too)
 	m_info.driverPriv = m_glsl;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
 	int ret = nv50_ir_generate_code(&m_info);
+	m_msCodegen = ms_since(t0);
 	if (ret < 0)
 	{
 		fprintf(stderr, "Error compiling program: %d\n", ret);

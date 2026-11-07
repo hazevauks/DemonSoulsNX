@@ -220,8 +220,11 @@ GLSL and DKSH, `src/gpu/gpu_dk_sc.cpp`, docs/deko3d.md), cached on the SD card:
 | --- | --- |
 | The first run | the boot stood still with a dark blue screen (the renderer's own, with no frame from the game): with the spv target in the runtime, Soulbrandt's shader pass at the start compiled every program of the game's archives for Vulkan's cache. It is off on the Switch now (`DES_PRECOMPILE=0`) |
 | The second run, on the screen | **the game draws**: the disclaimer, the title menu, New Game, and on to character creation, which was dark |
-| The compiles | the first, 154 ms; then a vertex program of 7 instructions held the frames for about 50 seconds and one of 67 for about 90: the game draws on the thread that compiles. Which of the three steps takes the time is the next run's question (the log now names it for a compile over half a second) |
-| The sound | the mixer at 48,000 frames a second, its queue never empty; on the console a strong hiss in the game's sound, not in the numbers |
+| The compiles | the first, 154 ms; then a vertex program of 7 instructions held the frames for about 50 seconds and one of 67 for about 90: the game draws on the thread that compiles |
+| Where the time went (`DESNX_DK_SHADER_TIMES=1`) | almost every program: glslang and SPIRV-Tools 11 to 260 ms, SPIRV-Cross under 20, uam under 300. The slow ones are the vertex programs that read their own vertices (`guest_vp2`): 3.7 KB of HLSL became 122,217 SPIR-V words and 444 KB of GLSL, and uam took 66 seconds; 10.5 KB, 138,040 words, 481 KB and 89 seconds. Their fetch unrolled 16 attributes times 4 components times every format's loads |
+| Their fetch, only the attributes read, its components' loop a loop (`rsxc_dk.c`) | the same programs: 10,216 words, 31 KB of GLSL, uam 3 seconds; 32,796 words, 90 KB, 16.5 seconds; 36,485 words, 102 KB, 22 seconds. Of uam's time, Mesa's GLSL front end takes about 70% and nouveau the rest; Mesa's optimization loops run once each past 20 KB of GLSL (`GLSLOptimizeConservatively`), which took a fifth off |
+| On the screen | fewer stops; character creation dark, and the game deaf to the buttons there while it compiled its three longest programs, now on the SD card |
+| The sound | the mixer at 48,000 frames a second, its queue never empty; on the console a strong hiss in the game's sound, not in the numbers. It was there before stage 12 too |
 
 ## Not checked yet
 

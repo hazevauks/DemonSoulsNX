@@ -18,6 +18,8 @@ enum pipeline_stage
 
 void glsl_frontend_init();
 void glsl_frontend_exit();
+// DemonSoulsNX: Mesa's optimization loops once each (GLSLOptimizeConservatively), for a long program
+void glsl_frontend_set_conservative(bool on);
 
 glsl_program glsl_program_create(const char* source, pipeline_stage stage);
 const tgsi_token* glsl_program_get_tokens(glsl_program prg, unsigned int& num_tokens);
