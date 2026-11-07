@@ -19,8 +19,12 @@
  * "Starts that fall back" below says when and how): Vulkan's D3D12 (the new
  * path's on Windows, the legacy renderer off it), the new path's D3D12 the
  * legacy renderer.
+ *
+ * DemonSoulsNX: on Horizon (__SWITCH__) there is no legacy renderer, D3D12 or
+ * vkd3d: every route is the new path's (RSX_OUTNX_ROUTE below), so no legacy
+ * name is referenced and nothing falls back.
  */
-#if defined(PS3RECOMP_RSX_HAL) && (defined(_WIN32) || defined(PS3RECOMP_RSX_D3D12_VKD3D))
+#if defined(PS3RECOMP_RSX_HAL) && (defined(_WIN32) || defined(PS3RECOMP_RSX_D3D12_VKD3D) || defined(__SWITCH__))
 
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS   /* getenv */
@@ -61,6 +65,12 @@ enum { ROUTE_NONE, ROUTE_LEGACY, ROUTE_D3D12, ROUTE_NULL, ROUTE_VULKAN };
 #if defined(_WIN32)
 #define ROUTE_DEFAULT ROUTE_D3D12    /* the new path on D3D12 */
 #define ROUTE_D3D     ROUTE_D3D12
+#elif defined(__SWITCH__)
+/* DemonSoulsNX: the new path on the null backend until the deko3D one; d3d12
+ * and legacy are not in the build, so they name the default. */
+#define ROUTE_DEFAULT ROUTE_NULL
+#define ROUTE_D3D     ROUTE_DEFAULT
+#define RSX_OUTNX_ROUTE 1
 #else
 #if defined(PS3RECOMP_RSX_HAL_VULKAN)
 #define ROUTE_DEFAULT ROUTE_VULKAN
@@ -122,7 +132,11 @@ static long route_pick(void)
         other = 1;   /* (the new path off Windows is null and Vulkan) */
 #endif
     } else if (same_name(e, "legacy")) {
+#if defined(RSX_OUTNX_ROUTE)
+        other = 1;   /* DemonSoulsNX: no legacy renderer on Horizon */
+#else
         want = ROUTE_LEGACY;
+#endif
     } else if (same_name(e, "null")) {
         want = ROUTE_NULL;   /* (developers and CI only: never in Settings) */
     } else if (same_name(e, "vulkan")) {
@@ -181,7 +195,12 @@ static const rsx_route* route_table(void)
 #if defined(PS3RECOMP_RSX_HAL_VULKAN)
     if (r == ROUTE_VULKAN) return &rsxc_route_vk;
 #endif
+#if defined(RSX_OUTNX_ROUTE)
+    (void)r;
+    return &rsxc_route_null;   /* DemonSoulsNX: the only route Horizon has so far */
+#else
     return r == ROUTE_NULL ? &rsxc_route_null : NULL;
+#endif
 }
 
 const char* rsx_out_renderer(void)
@@ -190,10 +209,18 @@ const char* rsx_out_renderer(void)
     return t ? t->name : "legacy";
 }
 
+#if defined(RSX_OUTNX_ROUTE)
+/* DemonSoulsNX: a route always, and no legacy name to link. */
+#define RSX_OUT_V_(name, legacy, params, args) \
+    void rsx_out_##name params { route_table()->name args; }
+#define RSX_OUT_R_(ret, name, legacy, params, args) \
+    ret rsx_out_##name params { return route_table()->name args; }
+#else
 #define RSX_OUT_V_(name, legacy, params, args) \
     void rsx_out_##name params { const rsx_route* const t_ = route_table(); if (t_) t_->name args; else legacy args; }
 #define RSX_OUT_R_(ret, name, legacy, params, args) \
     ret rsx_out_##name params { const rsx_route* const t_ = route_table(); return t_ ? t_->name args : legacy args; }
+#endif
 
 #if defined(RSX_OUT_FALLS_BACK)
 /* Three of the functions are written out in the section below (a start, and
@@ -459,4 +486,4 @@ int rsx_out_backend_init(uint32_t width, uint32_t height, const char* title)
 }
 #endif /* RSX_OUT_FALLS_BACK */
 
-#endif /* PS3RECOMP_RSX_HAL && (_WIN32 || PS3RECOMP_RSX_D3D12_VKD3D) */
+#endif /* PS3RECOMP_RSX_HAL && (_WIN32 || PS3RECOMP_RSX_D3D12_VKD3D || __SWITCH__) */

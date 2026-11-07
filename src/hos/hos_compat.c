@@ -4,8 +4,12 @@
  * cannot do: a call that cannot work fails with an error the runtime already reports.
  */
 
+#include <dirent.h>
 #include <errno.h>
+#include <fnmatch.h>
+#include <glob.h>
 #include <malloc.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -310,6 +314,60 @@ int pipe(int fds[2])
     (void)fds;
     errno = ENOSYS;
     return -1;
+}
+
+/* glob() for a pattern whose wildcards are all in its last part, which is how the renderer's
+ * core asks (rsxc_frame.inc: is there a shot_NNN_00_d*.bmp yet). Its flags are left out; the
+ * names come back in the folder's order. */
+static int glob_add(glob_t *g, const char *path)
+{
+    char **list = realloc(g->gl_pathv, (size_t)(g->gl_pathc + 2) * sizeof *list);
+    if (!list)
+        return -1;
+    g->gl_pathv = list;
+    if (!(list[g->gl_pathc] = strdup(path)))
+        return -1;
+    list[++g->gl_pathc] = NULL;
+    return 0;
+}
+
+int glob(const char *pattern, int flags, int (*errfunc)(const char *, int), glob_t *g)
+{
+    (void)flags;
+    (void)errfunc;
+    memset(g, 0, sizeof *g);
+    const char *slash = strrchr(pattern, '/');
+    char dir[1024];
+    const size_t n = slash ? (size_t)(slash - pattern) : 0;
+    if (n >= sizeof dir)
+        return GLOB_NOSPACE;
+    memcpy(dir, pattern, n);
+    dir[n] = '\0';
+    const char *name = slash ? slash + 1 : pattern;
+    DIR *d = opendir(slash ? (n ? dir : "/") : ".");
+    if (!d)
+        return GLOB_NOMATCH;
+    char path[1280];
+    for (const struct dirent *e; (e = readdir(d));) {
+        if (fnmatch(name, e->d_name, 0) != 0)
+            continue;
+        snprintf(path, sizeof path, "%s%s%s", slash ? dir : "", slash ? "/" : "", e->d_name);
+        if (glob_add(g, path) != 0) {
+            closedir(d);
+            return GLOB_NOSPACE;
+        }
+    }
+    closedir(d);
+    return g->gl_pathc ? 0 : GLOB_NOMATCH;
+}
+
+void globfree(glob_t *g)
+{
+    for (size_t i = 0; g->gl_pathv && i < (size_t)g->gl_pathc; i++)
+        free(g->gl_pathv[i]);
+    free(g->gl_pathv);
+    g->gl_pathv = NULL;
+    g->gl_pathc = 0;
 }
 
 int posix_memalign(void **out, size_t alignment, size_t size)

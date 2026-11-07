@@ -115,6 +115,13 @@ no developer cheats):
   exception entry.
 - `pipe()` joins `src/hos/hos_compat.c`, failing with ENOSYS: its one caller, a check before a guest
   memory dump, does without.
+- **The portable renderer** (stage 12): the runtime and the host side are built with
+  `PS3RECOMP_RSX_HAL`, so the boot draws through the route switch (`libs/video/rsx_out.c`) and the
+  renderer's core (`libs/video/rsxcore`) on the GPU layer (`libs/video/gpu`). The definition is this
+  build's own and `PRIVATE` to those two: ps3recomp's option of the same name makes it `PUBLIC`,
+  which would reach every lifted chunk's command line. Turning it on compiled the runtime and the
+  host side again (330 objects, 4.5 minutes), and none of the chunks. The core's one call newlib
+  lacks, `glob()`, joins `hos_compat.c`.
 
 The host side is a set of objects, not an archive, as Soulbrandt compiles these files into
 `des_boot` itself. From an archive the linker takes only what something asks for by name, and two

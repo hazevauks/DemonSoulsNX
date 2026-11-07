@@ -74,6 +74,11 @@ if(DESNX_RUNTIME)
 	target_compile_definitions(ps3recomp_runtime PRIVATE
 		"MBEDTLS_USER_CONFIG_FILE=\"${CMAKE_SOURCE_DIR}/src/hos/hos_mbedtls_config.h\"")
 	target_sources(ps3recomp_runtime PRIVATE ${CMAKE_SOURCE_DIR}/src/hos/hos_compat.c)
+	# The portable renderer (libs/video/rsxcore on libs/video/gpu) and its route switch, rsx_out (stage 12).
+	# Defined here, PRIVATE to the runtime and the host side: ps3recomp's own PS3RECOMP_RSX_HAL option makes it
+	# PUBLIC, which would put it on every lifted chunk's command line and compile them all again, for hours
+	target_compile_definitions(ps3recomp_runtime PRIVATE PS3RECOMP_RSX_HAL=1)
+	target_include_directories(ps3recomp_runtime PRIVATE ${CMAKE_SOURCE_DIR}/third_party/ps3recomp/libs/video/gpu)
 	add_custom_target(desnx_runtime ALL DEPENDS ps3recomp_runtime)
 endif()
 
@@ -142,8 +147,10 @@ if(DESNX_RUNTIME AND DESNX_HOST)
 		-fwrapv -fno-strict-aliasing -ffp-contract=off
 		-Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-label
 		-Wno-unused-but-set-variable)
-	# a lift without a shadow stack, and no developer cheats (Soulbrandt's defaults)
-	target_compile_definitions(desnx_host PRIVATE _GNU_SOURCE DS_NO_SHADOW_STACK)
+	# a lift without a shadow stack, and no developer cheats (Soulbrandt's defaults); the boot and the port reach
+	# the renderer through the portable renderer's route switch (PS3RECOMP_RSX_HAL, as for the runtime above)
+	target_compile_definitions(desnx_host PRIVATE _GNU_SOURCE DS_NO_SHADOW_STACK PS3RECOMP_RSX_HAL=1)
+	target_include_directories(desnx_host PRIVATE ${PS3RECOMP}/libs/video/gpu)
 	set_property(SOURCE ${SOULBRANDT_PORT}/des_options.cpp ${SOULBRANDT_PORT}/des_menu_sfx.cpp
 		APPEND PROPERTY COMPILE_DEFINITIONS DES_DEV=0)
 	target_link_libraries(desnx_host PUBLIC ps3recomp_runtime)

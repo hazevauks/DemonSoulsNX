@@ -191,6 +191,17 @@ the hardware under load (the game keeps three cores busy). That console had an o
 loaded, at the stock clocks. The game's own crash report was not written, since the game did not
 crash. The same build had run 90 seconds before without it, and the next run 130.
 
+The stage 12a test, 2026-11-07: the game with the portable renderer's core, on the GPU layer's
+null backend (it records and checks every command and draws nothing), to the title screen, Start,
+Cross and Circle:
+
+| What | Result |
+| --- | --- |
+| The route | `[rsx_out] route null (the new path on the null backend: checks every command, draws nothing)` |
+| The GPU layer's checks | 3,685 frames presented, each `0 failed checks` |
+| The game's frames, 10 seconds at a time | 116, 251, then 294 to 301 to the end: 30 a second, the PS3's rate. The old null backend gave 108 to 110: it drew every triangle in software |
+| The rest | as before: the save loaded, the cache in memory (139 files, 49 MB), guest memory 469 MB in 63 mappings, nothing refused; closed from the HOME menu after about 125 seconds |
+
 ## Not checked yet
 
 How late the sound is with 1024-frame buffers: two of them in the audio renderer (43 ms) and
@@ -233,8 +244,10 @@ while they run is a crash. So far every run has been closed from the HOME menu.
 The game's movies: the runtime plays them through FFmpeg, loaded at run time on a PC. The Switch
 has no loading at run time, and devkitPro's switch-ffmpeg 7.1 would have to be linked in.
 
-The game's speed: about 11 frames a second at the title screen, on the null renderer, where the
-PS3 gives 30. Stages 16 and 17.
+The game's speed in a level. At the title screen it now keeps the PS3's 30 frames a second, on
+the portable renderer's null backend (the stage 12a test); the 11 before were the old null
+backend's, which drew every triangle in software. What drawing for real costs, and a level,
+are stages 16 and 17.
 
 Two of the game's imports have no HLE handler and get a faked CELL_OK: NIDs 0xAF505DEF (called
 from 0x00E491C4) and 0x36D0C2C5 (from 0x00E1240C), which neither ps3recomp's NID database nor
@@ -255,7 +268,7 @@ Soulbrandt's notes name. The game goes on to its title screen past both.
 | 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | **done**: the logs in `SD_LOG`, whole and readable; `tools/nxlink_run.py` sends an NRO to its place on the SD card and keeps its live log on the PC; `settings.txt` sets the runtime's options; `tools/summarize_log.py` sums a log up |
 | 10. Crash triage: alignment faults, missing system calls, null pointers | **done**: a crash writes `SD_LOG/demonsouls_crash.txt` (the fault decoded, registers, call stack, the PS3 code), `abort` and `assert` too, and `tools/crash_symbolize.py` names its addresses; the log summary lists the runtime's missing functions and system calls, unlifted calls and the guest's null pointers. Checked on the console with a crash on purpose; no alignment fault has happened yet |
 | 11. Asset loading: archives, materials, shaders, streaming | **done** to the title screen: where both forms of a file are on the disc, the game opens the `.dcx` (114 of 114, none of the 3 GB of raw twins). The game's file reads and writes are counted by the disc, the cache and the saves: the cache's copies took 10.4 s of writing on the SD card, so the cache is now in memory (32 ms, 52 MB). A load into the Nexus, with the cache read back and a level streaming in, comes after stage 12, when the screen shows where the game is |
-| 12. Native deko3D renderer | to do |
+| 12. Native deko3D renderer | **in progress**, in four steps (docs/engine.md). 12a done: the portable renderer's core runs on the Switch on its null GPU backend, and every command of 3,685 frames passed the GPU layer's checks; the game keeps 30 frames a second at its title screen. Next, 12b: a deko3D backend that clears and shows the frames |
 | 13. The game's passes: deferred lighting, shadows, post-processing, fog | to do |
 | 14. Surfaces, framebuffers, textures, geometry buffers | to do |
 | 15. Render pass, lighting, particle and post-processing tuning | to do |

@@ -25,6 +25,9 @@ SDATA/EDAT and PKG keys, and its history once held decrypted firmware; neither i
 | `ps3recomp/runtime/platform/win32_compat.c`: on `__SWITCH__`, `SuspendThread` fails instead of parking the thread with a signal, and vectored exception handlers are registered without installing signal handlers | Horizon has no signals (docs/build.md) |
 | `ps3recomp/runtime/ppu/ppu_loader.cpp`: on `__SWITCH__`, the stray guest pointer trap arms nothing | the same |
 | `ps3recomp/libs/spurs/cellSpurs.c`: a job chain's Run or Kick that arrives while the chain is being walked makes the walker walk it again, instead of being dropped, and Shutdown retires the walk in progress | Demon's Souls runs its texture chain again as soon as the last job's flag is set; a run that found the walker still finishing was lost (docs/status.md) |
+| `ps3recomp/libs/video/rsxcore/rsxc_null.c` and `rsx_out.h`: the portable renderer's core and its null route are built on `__SWITCH__` too | stage 12: the core runs the game's frames on Horizon before the deko3D backend draws them |
+| `ps3recomp/libs/video/rsx_out.c`: on `__SWITCH__` every route is the new path's (null for now), with no legacy D3D12 renderer to name or fall back on | the Switch has no D3D12 and no legacy renderer |
+| `ps3recomp/runtime/ppu/tests/boot_main.cpp`: on `__SWITCH__` with `PS3RECOMP_RSX_HAL`, the boot draws through the route switch (`rsx_out`) instead of the old null backend | the same |
 | `ps3recomp/libs/spurs/cellSpurs.c`: a ring of the last 4,096 SPURS events (chain runs, walks, jobs, shutdowns, joins; event flag sets, clears, waits and the SPU's writes to a flag), printed once, for the chains and that flag, when a PPU wait on a flag blocks a second | the game's boot blocks on an event flag, and the runtime's own logs of these stop after their first few lines |
 
 Changes made for the Switch are marked `DemonSoulsNX` in the code. Everything else the runtime needs

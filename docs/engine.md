@@ -35,6 +35,15 @@ the HAL becomes:
 | swapchain | `DkSwapchain` on the default window |
 | write-back to guest memory | CPU-cached memory blocks the guest window can see |
 
+Stage 12 builds it in four steps, each checked on the console before the next:
+
+| Step | What | State |
+| --- | --- | --- |
+| 12a | The core on Horizon, on the GPU layer's null backend: it records and checks every command and draws nothing. The route switch has no legacy renderer here, so every route is the new path's | done: 0 failed checks in 3,685 frames, 30 frames a second at the title screen |
+| 12b | `gpu_dk*`: device, queue, memory, command buffers, the swap chain; clears, copies and the present, with the core's built-in passes compiled by uam at build time | next |
+| 12c | The game's shaders: the core's HLSL to DKSH (below), and where that runs | to do |
+| 12d | Draws: vertex and index buffers, textures and samplers, the title screen on the screen | to do |
+
 Because deko3D has no pipeline objects, the stutter Soulbrandt fights by predicting pipelines
 ([its docs/49](../third_party/soulbrandt/docs/49-pso-prediction-design.md)) does not exist here.
 Shader compiles remain.
@@ -54,7 +63,9 @@ walks every Cg program in the game's shader archives, with the variants earlier 
 fills a cache through a sink, one target a pass. A DKSH target fills a cache that goes on the SD
 card. That cache is made from the game's own shaders, so it is built on the player's PC and never
 shared. A draw whose program is not in the cache is logged and listed for the next pass; whether
-uam's compiler can also run on the console, for those, is a question for stage 12.
+uam's compiler can also run on the console, for those, is a question for stage 12. devkitPro's
+switch-mesa already runs Mesa's GLSL compiler and nouveau's code generator on the console (for
+OpenGL), and uam is built from the same two, so a build of uam for the Switch is one way (12c).
 
 ## Threads: the PPU and the SPUs on three cores
 

@@ -356,7 +356,7 @@ static void harness_guest_caller(uint32_t opd, uint64_t a0, uint64_t a1,
  * software path anywhere else -- the same selection runtime/host/host_posix.c
  * makes, so the ticker below is backend-agnostic and a POSIX host gets a
  * frame clock instead of no clock at all. */
-#if defined(_WIN32) || defined(PS3RECOMP_RSX_D3D12_VKD3D)
+#if defined(_WIN32) || defined(PS3RECOMP_RSX_D3D12_VKD3D) || (defined(__SWITCH__) && defined(PS3RECOMP_RSX_HAL))   /* DemonSoulsNX: Horizon with the portable renderer */
 #if defined(PS3RECOMP_RSX_HAL)
 /* Built with the portable renderer: the route switch picks the new path (its
  * D3D12 the default on Windows) or the legacy renderer at run time

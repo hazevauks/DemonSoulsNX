@@ -30,7 +30,7 @@
  * locks, files, timing), which win32_compat.h gives it on Linux; the
  * platform module (Phase 5) takes those.
  */
-#if defined(PS3RECOMP_RSX_HAL) && (defined(_WIN32) || defined(__linux__))
+#if defined(PS3RECOMP_RSX_HAL) && (defined(_WIN32) || defined(__linux__) || defined(__SWITCH__))   /* DemonSoulsNX: and Horizon */
 
 #ifndef _WIN32
 #include "../../../runtime/platform/win32_compat.h"
