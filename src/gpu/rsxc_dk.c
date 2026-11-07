@@ -227,7 +227,27 @@ static int rc_be_sc_compile(gpu_sc_stage stage, const char* src, size_t n, const
  * attributes live beside the program's 32 registers and 16 outputs, and uam took 66 to 89
  * seconds on one program. Here only the attributes the program reads are fetched, one line
  * each, and the components' loop stays a loop. The same values either way. NULL when the text
- * is not a fetch program. */
+ * is not a fetch program.
+ *
+ * Its divided and repeated attributes (the RSX's frequency divider: vid / d.w, vid % d.w) get an
+ * exact division too. Maxwell has no integer divide, and uam makes one of a float reciprocal with
+ * no correction (nv50_ir_lowering_nvc0.cpp, emulateIDIVMOD): an exact multiple can come out one
+ * short, 8 / 4 as 1 and 8 % 4 as 4, and the vertex then reads its neighbour's element. Here the
+ * float estimate is corrected by its remainder, twice, which is exact for any 32-bit vertex
+ * index; a divisor of 0 gives D3D's 0xFFFFFFFF quotient. */
+static const char k_udiv[] =
+    "uint vf_udiv(uint a, uint b) {\n"
+    "    if (b == 0u) return 0xFFFFFFFFu;\n"
+    "    uint q = (uint)((float)a / (float)b);\n"
+    "    int r = (int)(a - q * b);\n"
+    "    q = (uint)((int)q + (int)floor((float)r / (float)b));\n"
+    "    r = (int)(a - q * b);\n"
+    "    if (r < 0) q -= 1u;\n"
+    "    else if ((uint)r >= b) q += 1u;\n"
+    "    return q;\n"
+    "}\n"
+    "float4 vf_fetch(uint k, uint vid) {";
+
 static char* dk_fetch_loops(const char* src, size_t n)
 {
     static const char k_all[] = "[unroll] for (uint _k = 0u; _k < 16u; _k++) v[_k] = vf_fetch(_k, input.vid);";
@@ -249,11 +269,27 @@ static char* dk_fetch_loops(const char* src, size_t n)
                 u += (size_t)snprintf(used + u, sizeof used - u, "v[%u] = vf_fetch(%uu, input.vid); ", k, k);
         if (!u) snprintf(used, sizeof used, "v[0] = float4(0, 0, 0, 1);");
     }
-    const char* const from[] = {loop ? k_all : NULL, "[unroll] for (uint c = 0u; c < 4u; c++) {"};
-    const char* const to[] = {used, "[loop] for (uint c = 0u; c < 4u; c++) {"};
+    const char* const from[] = {
+        loop ? k_all : NULL,
+        "[unroll] for (uint c = 0u; c < 4u; c++) {",
+        "uint ei = dv == 1u ? vid / d.w : dv == 2u ? vid % d.w : vid;",
+        "float4 vf_fetch(uint k, uint vid) {",
+    };
+    const char* const to[] = {
+        used,
+        "[loop] for (uint c = 0u; c < 4u; c++) {",
+        "uint ei = vid; if (dv != 0u) { const uint q = vf_udiv(vid, d.w); ei = dv == 1u ? q : vid - q * d.w; }",
+        k_udiv,
+    };
     if (!loop) return NULL;
+    static int comp_loop = -1;   /* DESNX_DK_FETCH_LOOP=0 (settings.txt): the components' loop stays unrolled */
+    if (comp_loop < 0) {
+        const char* e = getenv("DESNX_DK_FETCH_LOOP");
+        comp_loop = !(e && *e == '0');
+    }
     char* t = NULL;
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 4; i++) {
+        if (i == 1 && !comp_loop) continue;
         const char* text = t ? t : src;
         const size_t len = t ? strlen(t) : n;
         const char* at = NULL;

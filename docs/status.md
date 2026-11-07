@@ -253,14 +253,28 @@ part of the picture, up to a straight line across the floor:
 | Read in the code and ruled out | deko3D's copies between buffers and images (its source), the uniform buffers' sizes and alignment, the vertex inputs' locations (the spv target's E1), the texture decode, `gl_FragCoord`'s origin (uam takes it as upper left), the depth read as colour (`rsx_d2c` gives no blue) |
 | The saves | every save after its folder's first had failed: ps3recomp writes a file to `.<name>.tmp` and renames it over the old one, and Horizon's file system renames onto no file that exists, so the game's icon failed first and the game wrote none of its data. Now the old file goes to a hidden name first (`cellSaveData.c`, third_party/README.md). Two autosaves in the level then completed, and the next boot loaded the files they wrote |
 
+The stage 14 tests, the same day, in the tutorial: surfaces, textures and the geometry the GPU
+reads, with two new tools, the targets of a frame written to the SD card (`DESNX_DK_RT_DUMP`) and
+a description of each draw into a small target (`DESNX_DK_DRAW_PROBE`):
+
+| What | Result |
+| --- | --- |
+| uam's integer division | Maxwell has none, and uam makes one from a float reciprocal with no correction: an exact multiple can come out one short. The vertex fetch's frequency divider used it; it now divides exactly (`rsxc_dk.c`), and uam's "loss of precision" warning is gone from the log. The faults stayed |
+| The targets of a frame (four dumps by the canal) | every colour target smaller than the screen has all its rows the same: the depth of field's 640x360 pair, the bloom's 320x180 and 160x90, the exposure's 64x64 and 16x16 (Soulbrandt's docs/37 names this chain). The 1280x720 targets and the 128x128 one are right. The row they hold is the scene's near its top, and a 1280x720 target that the water reads is one of them blown up, so the streaks are the water and the sky reading the chain |
+| The chain's draws (the probe) | right: two triangles over the whole target, positions in its pixels, texture coordinates 0 to 1, the viewport the target's size, the vertex constants one texel of the scene, the texture scale 1, unit 0 the 1280x720 scene as a plain 2D view. They come through the input layout (the CPU's vertices, 16 attributes); the draws that read their own vertices, the 128x128 target's, come out right |
+| The components' loop of the vertex fetch unrolled (`DESNX_DK_FETCH_LOOP=0`) | no change |
+| Every draw through the input layout (`VP_GPU_FETCH=0`) | the scene as before, the faults as before: the input layout loses nothing in general |
+| Formats in the level's draws (the census and the probe) | RGBA8, BC1, R32F and depth (D24S8); B5G6R5, B5G5R5A1 and B4G4R4A4 still not checked |
+
 ## Not checked yet
 
-The tutorial's two faults (stage 13, left for later): the streaks in the canal's water and the
-cyan squares that flash over the near part of the picture. Neither stops the game. What has been
-tried and ruled out is in the stage 13 hunt above. Next to try: `FP_KILL` on the post-processing
-and effect programs (the `0x00B4xxxx` group in `FP_LIST`) one at a time; the targets of one frame
-written to the SD card, to see the pass where the streaks start; and the vertex and texture data
-the SPUs build, which the GPU may read before it is done on some frames.
+The tutorial's two faults (stages 13 and 14, left for later at the user's choice): the streaks in
+the canal's water and in the sky, and the cyan squares that flash over part of the picture,
+sometimes all of it. Neither stops the game. Both come from the post-processing chain: every pass
+that reads the full-size scene into a smaller target samples one row for the whole target, though
+its vertices, constants, texture and view are right (the stage 13 and 14 tables). Left to look at:
+the GLSL and DKSH of those passes' programs (the vertex programs without a fetch of their own,
+and the one-sample downsample `0xB41801`), which only the console's compile shows.
 
 How late the sound is with 1024-frame buffers: two of them in the audio renderer (43 ms) and
 cellAudio's queue on top. Stage 7 measures it with the game's own sound; if it is too much,
@@ -328,7 +342,7 @@ Soulbrandt's notes name. The game goes on to its title screen past both.
 | 11. Asset loading: archives, materials, shaders, streaming | **done** to the title screen: where both forms of a file are on the disc, the game opens the `.dcx` (114 of 114, none of the 3 GB of raw twins). The game's file reads and writes are counted by the disc, the cache and the saves: the cache's copies took 10.4 s of writing on the SD card, so the cache is now in memory (32 ms, 52 MB). A load into the Nexus, with the cache read back and a level streaming in, comes after stage 12, when the screen shows where the game is |
 | 12. Native deko3D renderer | **done**, in four steps (docs/engine.md): the portable renderer's core on the Switch (12a), the deko3D backend `src/gpu` (12b), the game's shaders compiled on the console and kept on the SD card (12c), its draws, vertex input and textures (12d). The disclaimer, the title menu, New Game and character creation are drawn, the last perfectly, at 30 frames a second. A program's first compile holds the frames, once: most under half a second, the longest vertex programs 11 to 22 seconds |
 | 13. The game's passes: deferred lighting, shadows, post-processing, fog | **done**: the tutorial level is drawn with its light, shadows, fog, water and post-processing, and played; the game's saves now write on the Switch and load back. Two faults are left for later (Not checked yet): streaks in the canal's water, and cyan squares that flash for a frame |
-| 14. Surfaces, framebuffers, textures, geometry buffers | to do |
+| 14. Surfaces, framebuffers, textures, geometry buffers | **done**: the level's targets, textures (RGBA8, BC1, R32F, depth) and both vertex paths checked on the console; the vertex fetch divides exactly, and a frame's targets can be written to the SD card. The post-processing chain's one-row targets, which make the streaks and squares, are left open (Not checked yet) |
 | 15. Render pass, lighting, particle and post-processing tuning | to do |
 | 16. Frames and timings against targets: Nexus, Boletaria, Stonefang, HUD, phantoms, cutscenes | to do |
 | 17-19. 30 fps at 1020/460/1331 MHz, memory budget, everything on hardware | to do |

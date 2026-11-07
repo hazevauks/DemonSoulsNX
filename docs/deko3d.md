@@ -59,6 +59,12 @@ target's tag (its compilers, edits and layout), the stage, the entry point and t
    constants as a uniform buffer, and y flipped back: the spv target flips it for Vulkan;
 3. GLSL to DKSH: uam (`third_party/uam`), linked into the game.
 
+Before step 1, a vertex program that reads its own vertices (the core's fetch mode) is edited
+in `rsxc_dk.c`: only the attributes it reads are fetched, its components' loop stays a loop,
+and its frequency divider (`vid / d.w`, `vid % d.w`) divides exactly. uam has no integer
+divide: it takes a float reciprocal with no correction, so an exact multiple can come out one
+short (8 / 4 as 1, 8 % 4 as 4). The edit corrects the float estimate by its remainder.
+
 glslang, SPIRV-Tools and SPIRV-Cross are fetched at ps3recomp's pins and built for Horizon
 (`cmake/desnx_shader_compilers.cmake`). uam brings a copy of Mesa's GLSL compiler, as
 switch-mesa's EGL does (SDL2 links it): uam goes into one object with every name it defines but
@@ -100,6 +106,9 @@ screen at 30 a second.
 | `DESNX_DK_CLEAR_NEW=0` | new colour and depth targets left as their memory was, instead of cleared to zero before their first use |
 | `DESNX_DK_COMPRESS=0` | targets made without the hardware's compression |
 | `DESNX_DK_CENSUS=1` | each kind of target, copy, read-back and view that reads a texture as another format named in the log once, when it first comes, with the targets made in the present lines |
+| `DESNX_DK_RT_DUMP=1` | L3 and R3 pressed together write every colour target, and every texture the screen's size, to `SD_LOG/rt_dump/<n>/` as BMPs once the GPU is idle (about 30 seconds on the SD card). The pictures are the game's: they stay off the repository |
+| `DESNX_DK_DRAW_PROBE=1` | the first draw of each pipeline into each colour target smaller than the screen described in the log once: the target, the viewport, the first four vertices' position and attribute 8, the vertex constants c[467], posscale and posoffset, the fragment program's texture scales and what its unit 0 holds |
+| `DESNX_DK_FETCH_LOOP=0` | the vertex fetch's component loop kept unrolled (`rsxc_dk.c`): slower compiles, for comparing |
 | `DESNX_DK_HLSL_DUMP=1` | each program's HLSL, as the core hands it over, to `shader_cache/hlsl` on the SD card, named by stage, length (`FP_LIST`'s) and hash. Made from the game's programs: it stays off the repository |
 
 ## Not done yet

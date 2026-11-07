@@ -19,7 +19,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <switch.h>
+
+#include "../platform/nx_paths.h"
 
 #include "gpu.h"
 #include "gpu_cmd_ops.h"
@@ -197,6 +200,10 @@ struct gpu_cmd {
     uint32_t      barrier;         /* invalidate flags waiting for the next draw, clear or copy */
     uint32_t      desc_epoch;
     uint32_t      idx_size;        /* the bound index buffer's bytes per index */
+    /* what DESNX_DK_DRAW_PROBE reads back (draw_probe) */
+    DkGpuAddr     probe_vb, probe_ib, probe_cb[GPU_MAX_SLOTS];
+    uint32_t      probe_stride;
+    DkViewport    probe_vp;
     uint32_t      drawn;           /* targets written since the last barrier (pass_barrier) */
 };
 
@@ -1711,6 +1718,152 @@ static gpu_texture dk_swap_image(gpu_device* d, gpu_swapchain sc, uint32_t index
     return s && index < s->n ? s->image[index] : none;
 }
 
+/* ---------------------------------------------------------------------------
+ * The target dump
+ *
+ * DESNX_DK_RT_DUMP=1 (settings.txt), then L3 and R3 pressed together: once the GPU is idle, every
+ * colour target, and every texture the size of the screen, goes to SD_LOG/rt_dump/<n>/ on the
+ * SD card as a BMP, with what it holds at the end of the frame, for finding the pass a fault
+ * starts in. Floating point ones are written as |value| clamped to 0..1. The pictures are the
+ * game's: they stay on the SD card and the PC, never in the repository.
+ * -------------------------------------------------------------------------*/
+
+static float half_to_float(uint16_t h)
+{
+    const uint32_t e = (h >> 10) & 31u, m = h & 1023u;
+    const float v = e ? ldexpf((float)(m | 1024u), (int)e - 25) : ldexpf((float)m, -24);
+    return e == 31u ? 1.0f : v;
+}
+
+static uint8_t to_byte(float v)
+{
+    v = fabsf(v);
+    return v >= 1.0f ? 255 : (uint8_t)(v * 255.0f + 0.5f);
+}
+
+/* One texture's level 0, layer 0, to path as a 24-bit BMP; 0 when its format is not one of
+ * these: RGBA8, BGRA8, R32F, RGBA16F. */
+static int dump_texture(DkDev* dd, const Tex* t, const char* path)
+{
+    const uint32_t bpp = t->format == 41 ? 4 : t->format == 10 ? 8 : 4;
+    if (t->format != 27 && t->format != 28 && t->format != 29 && t->format != 87 && t->format != 88 &&
+        t->format != 41 && t->format != 10)
+        return 0;
+    const uint32_t w = t->width, h = t->height, pitch = (uint32_t)align_up((uint64_t)w * bpp, 256);
+    DkMemBlockMaker bm;
+    dkMemBlockMakerDefaults(&bm, dd->dev, (uint32_t)align_up((uint64_t)pitch * h, DK_MEMBLOCK_ALIGNMENT));
+    bm.flags = DkMemBlockFlags_CpuCached | DkMemBlockFlags_GpuCached;
+    DkMemBlock buf = dkMemBlockCreate(&bm);
+    dkMemBlockMakerDefaults(&bm, dd->dev, 64u << 10);
+    bm.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
+    DkMemBlock cmdmem = dkMemBlockCreate(&bm);
+    DkCmdBufMaker cm;
+    dkCmdBufMakerDefaults(&cm, dd->dev);
+    DkCmdBuf cb = buf && cmdmem ? dkCmdBufCreate(&cm) : NULL;
+    int ok = 0;
+    if (cb) {
+        dkCmdBufAddMemory(cb, cmdmem, 0, 64u << 10);
+        DkImageView v;
+        dkImageViewDefaults(&v, &t->image);
+        if (t->layers > 1) {
+            v.type = DkImageType_2D;
+            v.layerCount = 1;
+        }
+        v.mipLevelCount = 1;
+        const DkImageRect r = {0, 0, 0, w, h, 1};
+        const DkCopyBuf to = {dkMemBlockGetGpuAddr(buf), pitch, 0};
+        dkCmdBufCopyImageToBuffer(cb, &v, &r, &to, 0);
+        dkCmdBufBarrier(cb, DkBarrier_Full, DkInvalidateFlags_L2Cache);
+        dkQueueSubmitCommands(dd->queue, dkCmdBufFinishList(cb));
+        dkQueueWaitIdle(dd->queue);
+        dkMemBlockFlushCpuCache(buf, 0, dkMemBlockGetSize(buf));
+        FILE* f = fopen(path, "wb");
+        uint8_t* line = malloc((size_t)w * 3 + 4);
+        if (f && line) {
+            const uint32_t rowb = (w * 3 + 3) & ~3u, size = rowb * h;
+            uint8_t hdr[54] = {'B', 'M'};
+            const uint32_t fields[] = {54 + size, 0, 54, 40, w, h};
+            memcpy(hdr + 2, fields, sizeof fields);
+            hdr[26] = 1;
+            hdr[28] = 24;
+            memcpy(hdr + 34, &size, 4);
+            fwrite(hdr, 1, sizeof hdr, f);
+            const uint8_t* mem = dkMemBlockGetCpuAddr(buf);
+            for (uint32_t y = h; y-- > 0;) {
+                const uint8_t* s = mem + (size_t)y * pitch;
+                memset(line, 0, rowb);
+                for (uint32_t x = 0; x < w; x++) {
+                    uint8_t* o = line + x * 3;   /* B, G, R */
+                    if (t->format == 41) {
+                        float fv;
+                        memcpy(&fv, s + x * 4, 4);
+                        o[0] = o[1] = o[2] = to_byte(fv);
+                    } else if (t->format == 10) {
+                        uint16_t hv[3];
+                        memcpy(hv, s + x * 8, 6);
+                        o[0] = to_byte(half_to_float(hv[2]));
+                        o[1] = to_byte(half_to_float(hv[1]));
+                        o[2] = to_byte(half_to_float(hv[0]));
+                    } else if (t->format == 87 || t->format == 88) {
+                        o[0] = s[x * 4 + 0];
+                        o[1] = s[x * 4 + 1];
+                        o[2] = s[x * 4 + 2];
+                    } else {
+                        o[0] = s[x * 4 + 2];
+                        o[1] = s[x * 4 + 1];
+                        o[2] = s[x * 4 + 0];
+                    }
+                }
+                fwrite(line, 1, rowb, f);
+            }
+            ok = 1;
+        }
+        free(line);
+        if (f) fclose(f);
+        dkCmdBufDestroy(cb);
+    }
+    if (cmdmem) dkMemBlockDestroy(cmdmem);
+    if (buf) dkMemBlockDestroy(buf);
+    return ok;
+}
+
+static void rt_dump_check(DkDev* dd, const Swap* s)
+{
+    static int on = -1, held;
+    static unsigned n;
+    static PadState pad;
+    if (on < 0) {
+        on = knob("DESNX_DK_RT_DUMP", 0);
+        if (on) padInitialize(&pad, HidNpadIdType_No1, HidNpadIdType_Handheld);
+    }
+    if (!on) return;
+    padUpdate(&pad);
+    const u64 both = HidNpadButton_StickL | HidNpadButton_StickR;
+    const int now = (padGetButtons(&pad) & both) == both;
+    const int pressed = now && !held;
+    held = now;
+    if (!pressed) return;
+    char dir[160], path[224];
+    mkdir(NX_LOG_DIR, 0777);
+    snprintf(dir, sizeof dir, "%s/rt_dump", NX_LOG_DIR);
+    mkdir(dir, 0777);
+    snprintf(dir, sizeof dir, "%s/rt_dump/%u", NX_LOG_DIR, ++n);
+    mkdir(dir, 0777);
+    dkQueueWaitIdle(dd->queue);
+    const u64 t0 = armGetSystemTick();
+    unsigned wrote = 0;
+    for (uint32_t i = 0; i < dd->ntex; i++) {
+        const Tex* t = &dd->tex[i];
+        if (!t->live || t->swap || t->depth || t->block || t->samples != 1) continue;
+        if (!(t->use & GPU_USE_RT) && !(s && t->width == s->width && t->height == s->height)) continue;
+        snprintf(path, sizeof path, "%s/tex%u_format%u_%ux%u%s.bmp", dir, i + 1, t->format, t->width, t->height,
+                 t->use & GPU_USE_RT ? "_target" : "");
+        if (dump_texture(dd, t, path)) wrote++;
+    }
+    printf("[dk] dump %u: %u textures to %s in %.1f s (present %u)\n", n, wrote, dir,
+           (double)armTicksToNs(armGetSystemTick() - t0) / 1e9, s ? s->presents : 0);
+}
+
 static int dk_swap_present(gpu_device* d, gpu_swapchain sc, uint32_t interval, uint32_t flags)
 {
     DkDev* dd = DD(d);
@@ -1718,6 +1871,7 @@ static int dk_swap_present(gpu_device* d, gpu_swapchain sc, uint32_t interval, u
     Swap* s = swap_of(dd, sc);
     if (!s || s->current < 0) return GPU_PRESENT_FAILED;
     if (dk_lost(d)) return GPU_PRESENT_LOST;
+    rt_dump_check(dd, s);
     dkSwapchainSetSwapInterval(s->sc, interval);
     dkQueuePresentImage(dd->queue, s->sc, s->current);
     s->current = -1;
@@ -2016,6 +2170,7 @@ void gpu_dk_cmd_set_viewport(gpu_cmd* c, const gpu_viewport* vp)
 {
     const DkViewport v = {vp->x, vp->y, vp->width, vp->height, vp->min_depth, vp->max_depth};
     dkCmdBufSetViewports(c->cb, 0, &v, 1);
+    c->probe_vp = v;
 }
 
 void gpu_dk_cmd_set_scissor(gpu_cmd* c, const gpu_rect* rect)
@@ -2042,6 +2197,7 @@ void gpu_dk_cmd_bind_cb(gpu_cmd* c, uint32_t slot, gpu_addr addr)
 {
     const Lay* l = lay_of(c);
     if (!l || slot >= l->desc.nslots || !addr) return;
+    c->probe_cb[slot] = addr;
     const uint32_t size = bytes_from(DD(c->head.dev), addr, DK_UNIFORM_BUF_MAX_SIZE) & ~0xFFu;
     for (uint32_t st = 0; st < DkStage_MaxGraphics; st++)
         if (l->stages[slot] & (1u << st))
@@ -2084,6 +2240,10 @@ void gpu_dk_cmd_push_const1(gpu_cmd* c, uint32_t slot, uint32_t value, uint32_t 
 void gpu_dk_cmd_set_vb(gpu_cmd* c, uint32_t slot, gpu_addr addr, uint32_t size, uint32_t stride)
 {
     if (slot >= DK_MAX_VERTEX_BUFFERS) return;
+    if (slot == 0) {
+        c->probe_vb = addr;
+        c->probe_stride = stride;
+    }
     dkCmdBufBindVtxBuffer(c->cb, slot, addr, size);
     const DkVtxBufferState vb = {stride, 0};
     if (slot == 0) dkCmdBufBindVtxBufferState(c->cb, &vb, 1);
@@ -2092,6 +2252,7 @@ void gpu_dk_cmd_set_vb(gpu_cmd* c, uint32_t slot, gpu_addr addr, uint32_t size, 
 void gpu_dk_cmd_set_ib(gpu_cmd* c, gpu_addr addr, uint32_t size, gpu_format format)
 {
     (void)size;
+    c->probe_ib = addr;
     c->idx_size = format == GPU_FORMAT_R32_UINT ? 4 : 2;
     dkCmdBufBindIdxBuffer(c->cb, format == GPU_FORMAT_R32_UINT ? DkIdxFormat_Uint32 : DkIdxFormat_Uint16, addr);
 }
@@ -2136,9 +2297,109 @@ static void before_draw(gpu_cmd* c)
     if (c->tex_dirty) bind_textures(c);
 }
 
+/* The CPU's view of a GPU address in a CPU-visible block, or NULL. */
+static const uint8_t* cpu_of(DkDev* dd, DkGpuAddr addr)
+{
+    for (uint32_t i = 0; i < dd->nchunks; i++) {
+        const Chunk* k = &dd->chunks[i];
+        if (k->cpu && addr >= k->gpu && addr < k->gpu + k->size) return k->cpu + (addr - k->gpu);
+    }
+    return NULL;
+}
+
+/* DESNX_DK_DRAW_PROBE=1 (settings.txt): the first draw of each pipeline into each colour target
+ * smaller than the screen is described in the log once: the target, the viewport, the first
+ * four vertices' position (attribute 0) and attribute 8 (the first texture coordinate of the
+ * core's 256-byte vertices), and the vertex constants c[467], posscale and posoffset. For the
+ * passes that reduce the picture (stage 14's streaks). */
+static void draw_probe(gpu_cmd* c, int indexed, uint32_t count, uint32_t first, int32_t base)
+{
+    static int on = -1, lines;
+    if (on < 0) on = knob("DESNX_DK_DRAW_PROBE", 0);
+    if (!on || lines >= 60 || !c->pass.nrt) return;
+    DkDev* dd = DD(c->head.dev);
+    const View* rv = view_of(dd, c->pass.rt[0]);
+    if (!rv) return;
+    const Tex* rt = &dd->tex[rv->tex];
+    const Swap* s = &dd->swap[0];
+    if (rt->width >= s->width && rt->height >= s->height) return;
+    const uint32_t k[] = {c->pipeline, rt->width, rt->height};
+    if (!census_new(census_key(7, k, 3))) return;
+    lines++;
+    const Pipe* p = &dd->pipe[c->pipeline - 1];
+    char line[1600];
+    int n = snprintf(line, sizeof line,
+                     "[dk] probe: pipeline %u (%u attributes, stride %u) to %ux%u format %u, viewport %.1f,%.1f %.1fx%.1f, "
+                     "%s %u from %u (base %d):",
+                     c->pipeline, p->nattr, c->probe_stride, rt->width, rt->height, rt->format, c->probe_vp.x,
+                     c->probe_vp.y, c->probe_vp.width, c->probe_vp.height, indexed ? "indices" : "vertices", count, first,
+                     base);
+    const uint8_t* vb = p->nattr && c->probe_vb ? cpu_of(dd, c->probe_vb) : NULL;
+    const uint8_t* ib = indexed && c->probe_ib ? cpu_of(dd, c->probe_ib) : NULL;
+    for (uint32_t i = 0; vb && i < 4 && i < count && n < (int)sizeof line; i++) {
+        int64_t vi = (int64_t)first + i;
+        if (indexed) {
+            if (!ib) break;
+            const uint8_t* q = ib + (size_t)(first + i) * c->idx_size;
+            uint32_t ix = 0;
+            memcpy(&ix, q, c->idx_size);
+            vi = (int64_t)ix + base;
+        }
+        float a0[4], a8[4];
+        memcpy(a0, vb + (size_t)vi * c->probe_stride, sizeof a0);
+        memcpy(a8, vb + (size_t)vi * c->probe_stride + 128, sizeof a8);
+        n += snprintf(line + n, sizeof line - (size_t)n, " v%lld pos(%g %g %g %g) a8(%g %g %g %g);", (long long)vi,
+                      a0[0], a0[1], a0[2], a0[3], a8[0], a8[1], a8[2], a8[3]);
+    }
+    const uint8_t* cb = c->probe_cb[0] ? cpu_of(dd, c->probe_cb[0]) : NULL;
+    if (cb && n < (int)sizeof line) {
+        float k467[4], ps[4], po[4];
+        memcpy(k467, cb + 467 * 16, 16);
+        memcpy(ps, cb + 512 * 16, 16);
+        memcpy(po, cb + 513 * 16, 16);
+        n += snprintf(line + n, sizeof line - (size_t)n,
+                      " c467(%g %g %g %g) posscale(%g %g %g %g) posoffset(%g %g %g %g)", k467[0], k467[1], k467[2],
+                      k467[3], ps[0], ps[1], ps[2], ps[3], po[0], po[1], po[2], po[3]);
+    }
+    /* the fragment program's b1 (rsx_texscale[0], [1]) and what its unit 0 holds */
+    const Lay* l = lay_of(c);
+    for (uint32_t s = 0; l && s < l->desc.nslots && n < (int)sizeof line; s++) {
+        const gpu_layout_slot* ls = &l->desc.slot[s];
+        if (ls->kind == GPU_SLOT_CB && ls->reg == 1 && c->probe_cb[s]) {
+            const uint8_t* b1 = cpu_of(dd, c->probe_cb[s]);
+            if (b1) {
+                float t0[4], t1[4];
+                memcpy(t0, b1, 16);
+                memcpy(t1, b1 + 16, 16);
+                n += snprintf(line + n, sizeof line - (size_t)n, " texscale0(%g %g) texscale1(%g %g)", t0[0], t0[1],
+                              t1[0], t1[1]);
+            }
+        }
+        if (ls->kind == GPU_SLOT_TABLE_TEX && c->table[s].v) {
+            const uint32_t img0 = (uint32_t)(c->table[s].v & 0xFFFFFFFFu) - 1;
+            for (uint32_t q = 0; q < dd->ntpool; q++) {
+                const TPool* tp = &dd->tpool[q];
+                if (tp->kind != GPU_TABLE_TEX || img0 < tp->base || img0 >= tp->base + tp->count || !tp->memo) continue;
+                const gpu_view_desc* vd = &tp->memo[img0 - tp->base];
+                const Tex* tt = tex_of(dd, vd->texture);
+                if (tt)
+                    n += snprintf(line + n, sizeof line - (size_t)n,
+                                  " unit0: texture %ux%u format %u (use %#x, %u layers) as format %u dim %u swizzle %#x",
+                                  tt->width, tt->height, tt->format, tt->use, tt->layers, vd->format, vd->dim,
+                                  vd->swizzle);
+                else
+                    n += snprintf(line + n, sizeof line - (size_t)n, " unit0: empty");
+                break;
+            }
+        }
+    }
+    printf("%s\n", line);
+}
+
 void gpu_dk_cmd_draw(gpu_cmd* c, uint32_t vertices, uint32_t instances, uint32_t first_vertex, uint32_t first_instance)
 {
     if (!c->pipeline) return;
+    draw_probe(c, 0, vertices, first_vertex, 0);
     before_draw(c);
     dkCmdBufDraw(c->cb, c->prim, vertices, instances ? instances : 1, first_vertex, first_instance);
     c->drawn = 1;
@@ -2149,6 +2410,7 @@ void gpu_dk_cmd_draw_indexed(gpu_cmd* c, uint32_t indices, uint32_t instances, u
                              uint32_t first_instance)
 {
     if (!c->pipeline) return;
+    draw_probe(c, 1, indices, first_index, base_vertex);
     before_draw(c);
     dkCmdBufDrawIndexed(c->cb, c->prim, indices, instances ? instances : 1, first_index, base_vertex, first_instance);
     c->drawn = 1;

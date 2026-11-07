@@ -34,6 +34,13 @@
 #DESNX_DK_CLEAR_NEW=0
 #DESNX_DK_COMPRESS=0
 #DESNX_DK_CENSUS=1
+# With 1, L3 and R3 together write the frame's colour targets to SD_LOG/rt_dump as pictures (the
+# game stops for about 30 seconds; the pictures are the game's, keep them off the repository).
+#DESNX_DK_RT_DUMP=1
+# The first draw of each pipeline into a target smaller than the screen, described in the log.
+#DESNX_DK_DRAW_PROBE=1
+# 0 keeps the vertex fetch's component loop unrolled (slower compiles; the same pictures so far).
+#DESNX_DK_FETCH_LOOP=0
 
 # The game's shaders, compiled on the console: each step's time in the log, and the GLSL of one
 # that fails. Soulbrandt's pass over every shader at the start is off here; 1 runs it.
