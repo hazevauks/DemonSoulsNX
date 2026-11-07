@@ -91,6 +91,7 @@ screen at 30 a second.
 | `DESNX_DK_TINT=1` | a clear to black clears to a colour going round the hues instead, so the screen shows the clears, copies, blit and presents working while the game's draws have no shaders |
 | `DESNX_DK_SHADER_TIMES=1` | each compile's steps and their times in the log (without it, only compiles over half a second) |
 | `DESNX_DK_SHADER_DUMP=1` | the GLSL of a program uam refuses, in the log |
+| `DESNX_DK_CACHE=0` | every program compiled again, not read from the SD card's cache (still written there) |
 | `DES_PRECOMPILE=1` | Soulbrandt's shader pass at the start, for the spv target's cache (off by default here) |
 
 ## Not done yet

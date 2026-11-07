@@ -175,7 +175,12 @@ static int rc_be_sc_compile(gpu_sc_stage stage, const char* src, size_t n, const
     const gpu_layout_desc* const lay = layout ? layout : gpu_spv_guest_layout();
     char path[600];
     const int cached = dk_cache_file(stage, src, n, entry, lay, path, sizeof path);
-    if (cached && dk_cache_read(path, out)) {
+    static int read_cache = -1;   /* DESNX_DK_CACHE=0: compile every program again (still written) */
+    if (read_cache < 0) {
+        const char* e = getenv("DESNX_DK_CACHE");
+        read_cache = !(e && *e == '0');
+    }
+    if (cached && read_cache && dk_cache_read(path, out)) {
         InterlockedIncrement(&s_dk_hits);
         return 1;
     }
