@@ -204,7 +204,8 @@ The game's cache in a level. The game copies files it loads into `/dev_hdd1` and
 copies on later loads (Soulbrandt's docs/101: 173 copies during the load into 1-1, about 1,000
 files and 340 MB in a long session). It is now in memory, up to 512 MB, and files past that go to
 the SD card; the title screen fills 52 MB and reads none back. A load into the Nexus and a level,
-with the cache's reads and the memory it takes, has not been on the console yet.
+with the cache's reads and the memory it takes, has not been on the console yet: it needs a
+character, made in the game's menus, so it comes after stage 12 puts them on the screen.
 
 The system's blue screen in `hid` (the stage 11 tests): once so far, on a console with an
 overclocking module loaded. If it comes back, the next run is without the module.
@@ -253,7 +254,7 @@ Soulbrandt's notes name. The game goes on to its title screen past both.
 | 8. First boot of the game, with a fallback renderer | **done**: on the null renderer the game boots to its title screen and runs its loop at about 11 frames a second, with its sound; Start and Cross reach it, it makes its save and plays its menu sounds. Nothing is drawn on the screen until the deko3D renderer (stage 12), and the movies need FFmpeg |
 | 9. Test harness: nxlink and the SD card, logs in `SD_LOG` | **done**: the logs in `SD_LOG`, whole and readable; `tools/nxlink_run.py` sends an NRO to its place on the SD card and keeps its live log on the PC; `settings.txt` sets the runtime's options; `tools/summarize_log.py` sums a log up |
 | 10. Crash triage: alignment faults, missing system calls, null pointers | **done**: a crash writes `SD_LOG/demonsouls_crash.txt` (the fault decoded, registers, call stack, the PS3 code), `abort` and `assert` too, and `tools/crash_symbolize.py` names its addresses; the log summary lists the runtime's missing functions and system calls, unlifted calls and the guest's null pointers. Checked on the console with a crash on purpose; no alignment fault has happened yet |
-| 11. Asset loading: archives, materials, shaders, streaming | **in progress**: where both forms of a file are on the disc, the game opens the `.dcx` (114 of 114 to the title screen, none of the 3 GB of raw twins). The game's file reads and writes are counted by the disc, the cache and the saves: the cache's copies took 10.4 s of writing on the SD card to the title screen, so the cache is now in memory (32 ms, 52 MB). Left: a load into the Nexus, to see the cache read back and level streaming |
+| 11. Asset loading: archives, materials, shaders, streaming | **done** to the title screen: where both forms of a file are on the disc, the game opens the `.dcx` (114 of 114, none of the 3 GB of raw twins). The game's file reads and writes are counted by the disc, the cache and the saves: the cache's copies took 10.4 s of writing on the SD card, so the cache is now in memory (32 ms, 52 MB). A load into the Nexus, with the cache read back and a level streaming in, comes after stage 12, when the screen shows where the game is |
 | 12. Native deko3D renderer | to do |
 | 13. The game's passes: deferred lighting, shadows, post-processing, fog | to do |
 | 14. Surfaces, framebuffers, textures, geometry buffers | to do |
