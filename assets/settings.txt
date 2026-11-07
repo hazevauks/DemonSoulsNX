@@ -42,6 +42,12 @@
 # 0 keeps the vertex fetch's component loop unrolled (slower compiles; the same pictures so far).
 #DESNX_DK_FETCH_LOOP=0
 
+# Speed: the core's [PERF] lines, the GPU's time a frame (deko3D's timestamps), and every 10 s
+# the busiest threads and their share of a core.
+#PERF=1
+#RSX_GPU_TIMES=1
+#DESNX_CPU_REPORT=1
+
 # The game's shaders, compiled on the console: each step's time in the log, and the GLSL of one
 # that fails. Soulbrandt's pass over every shader at the start is off here; 1 runs it.
 #DESNX_DK_SHADER_TIMES=1

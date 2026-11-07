@@ -266,6 +266,21 @@ a description of each draw into a small target (`DESNX_DK_DRAW_PROBE`):
 | Every draw through the input layout (`VP_GPU_FETCH=0`) | the scene as before, the faults as before: the input layout loses nothing in general |
 | Formats in the level's draws (the census and the probe) | RGBA8, BC1, R32F and depth (D24S8); B5G6R5, B5G5R5A1 and B4G4R4A4 still not checked |
 
+The stage 15 measurements, the same day, walking the tutorial at stock clocks (1020 MHz CPU),
+with `PERF=1`, `RSX_GPU_TIMES=1` (the backend's timestamps, new) and `DESNX_CPU_REPORT=1` (each
+thread's time from the kernel, new):
+
+| What | Result |
+| --- | --- |
+| The frame | 80 to 95 ms: 10.5 to 13 frames a second (`frames:` 102 to 133 in 10 s) |
+| The GPU | 27 to 34 ms a frame: it would keep up with about 30 frames a second |
+| The backend's commands (`[dk] backend`) | 1.4 to 1.6 ms a frame of the render thread |
+| The core (`[PERF]`) | of the render thread's time, about half in `render_frame` (recording some 2,500 draws a frame) and half in `guest` (waiting on the game) |
+| The CPU | 252% to 296% of a core in all, of the three the game has: it is full. The SPU that runs the game's heavy jobs (`spu_exec_thread_proc`, Soulbrandt's "image 2") 71% to 83%; the main SPURS thread (`spu_async_thread`) 30% to 45%, and each job chain walk's 10% to 15%; a runtime thread (`thread_trampoline`) about 20%; HighGraphics (the game's drawing thread) about 17%; the game's main thread about 15%; ChrInsManThread about 15% |
+
+So the frame rate is the CPU's: the SPUs' emulation and the game's own threads on three A57
+cores, not the renderer. The title screen keeps 30 frames a second.
+
 ## Not checked yet
 
 The tutorial's two faults (stages 13 and 14, left for later at the user's choice): the streaks in
@@ -343,6 +358,6 @@ Soulbrandt's notes name. The game goes on to its title screen past both.
 | 12. Native deko3D renderer | **done**, in four steps (docs/engine.md): the portable renderer's core on the Switch (12a), the deko3D backend `src/gpu` (12b), the game's shaders compiled on the console and kept on the SD card (12c), its draws, vertex input and textures (12d). The disclaimer, the title menu, New Game and character creation are drawn, the last perfectly, at 30 frames a second. A program's first compile holds the frames, once: most under half a second, the longest vertex programs 11 to 22 seconds |
 | 13. The game's passes: deferred lighting, shadows, post-processing, fog | **done**: the tutorial level is drawn with its light, shadows, fog, water and post-processing, and played; the game's saves now write on the Switch and load back. Two faults are left for later (Not checked yet): streaks in the canal's water, and cyan squares that flash for a frame |
 | 14. Surfaces, framebuffers, textures, geometry buffers | **done**: the level's targets, textures (RGBA8, BC1, R32F, depth) and both vertex paths checked on the console; the vertex fetch divides exactly, and a frame's targets can be written to the SD card. The post-processing chain's one-row targets, which make the streaks and squares, are left open (Not checked yet) |
-| 15. Render pass, lighting, particle and post-processing tuning | to do |
+| 15. Render pass, lighting, particle and post-processing tuning | **in progress**: measured in the tutorial: the GPU takes 27 to 34 ms a frame, but the CPU is full (the SPUs' emulation first), so the game runs at 10.5 to 13 frames a second |
 | 16. Frames and timings against targets: Nexus, Boletaria, Stonefang, HUD, phantoms, cutscenes | to do |
 | 17-19. 30 fps at 1020/460/1331 MHz, memory budget, everything on hardware | to do |

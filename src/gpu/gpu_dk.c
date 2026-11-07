@@ -54,6 +54,16 @@
 
 enum { MEM_GPU, MEM_UPLOAD, MEM_READBACK, MEM_IMAGE, MEM_KINDS };
 
+/* The render thread's time inside the backend's commands, for gpu_dk_report (RSX_GPU_TIMES): only
+ * the outermost command counts, so one that calls another is not counted twice. */
+static uint64_t s_be_ticks;
+static int s_be_depth;
+static inline void be_end(uint64_t* t0)
+{
+    if (--s_be_depth == 0) s_be_ticks += armGetSystemTick() - *t0;
+}
+#define BE_SCOPE() uint64_t be_t0 __attribute__((cleanup(be_end))) = (s_be_depth++, armGetSystemTick())
+
 /* An on/off setting from the environment (settings.txt), read once. */
 static int knob(const char* name, int def)
 {
@@ -257,6 +267,12 @@ typedef struct DkDev {
     DkFence    init_fence;
     uint32_t   init_pending, init_fenced;
     uint32_t   targets_made;
+    /* RSX_GPU_TIMES (gpu_ns): each recorder's first and last timestamp, 16-byte reports */
+    DkMemBlock ts_mem;
+    const volatile uint64_t* ts_cpu;
+    DkGpuAddr  ts_gpu;
+    uint64_t   gpu_ns_sum, gpu_ns_n;
+    uint8_t    ts_live[MAX_SLOTS];
 } DkDev;
 
 #define DD(d) ((DkDev*)(d))
@@ -1238,12 +1254,14 @@ static void write_tex(DkDev* dd, TPool* p, uint32_t index, const gpu_view_desc* 
 
 static void dk_table_write_tex(gpu_device* d, gpu_table_pool pool, uint32_t index, const gpu_view_desc* srv)
 {
+    BE_SCOPE();
     DkDev* dd = DD(d);
     write_tex(dd, pool.id && pool.id <= dd->ntpool ? &dd->tpool[pool.id - 1] : NULL, index, srv);
 }
 
 static void dk_table_write_sampler(gpu_device* d, gpu_table_pool pool, uint32_t index, gpu_sampler s)
 {
+    BE_SCOPE();
     DkDev* dd = DD(d);
     TPool* p = pool.id && pool.id <= dd->ntpool ? &dd->tpool[pool.id - 1] : NULL;
     if (!p || p->kind != GPU_TABLE_SAMPLER || index >= p->count) return;
@@ -1262,6 +1280,7 @@ static gpu_table_writer dk_table_writer_get(gpu_device* d, gpu_table_pool pool)
 
 static void dk_table_writer_tex(gpu_device* d, gpu_table_writer w, uint32_t index, const gpu_view_desc* srv)
 {
+    BE_SCOPE();
     DkDev* dd = DD(d);
     write_tex(dd, w.v && w.v <= dd->ntpool ? &dd->tpool[w.v - 1] : NULL, index, srv);
 }
@@ -1562,15 +1581,27 @@ static gpu_cmd* dk_cmd_begin(gpu_device* d, uint32_t slot)
                         DkInvalidateFlags_L2Cache);
     bind_descriptors(c);
     c->barrier = 0;
+    if (dd->ts_mem) {   /* RSX_GPU_TIMES: the last recording of this slot is done (the core waited for it) */
+        if (dd->ts_live[slot]) {
+            const uint64_t t0 = dd->ts_cpu[slot * 4 + 1], t1 = dd->ts_cpu[slot * 4 + 3];
+            if (t1 > t0) {
+                dd->gpu_ns_sum += dkTimestampToNs(t1 - t0);
+                dd->gpu_ns_n++;
+            }
+        }
+        dkCmdBufReportCounter(c->cb, DkCounter_TimestampPipelineTop, dd->ts_gpu + (DkGpuAddr)slot * 32);
+        dd->ts_live[slot] = 1;
+    }
     trace(c, "cmd_begin: slot %u", slot);
     return c;
 }
 
 static void dk_cmd_end(gpu_device* d, gpu_cmd* c)
 {
-    (void)d;
+    DkDev* dd = DD(d);
     if (!c || !c->open) return;
     dkCmdBufBarrier(c->cb, DkBarrier_Full, DkInvalidateFlags_L2Cache);   /* (readbacks: the GPU's writes reach memory) */
+    if (dd->ts_mem) dkCmdBufReportCounter(c->cb, DkCounter_Timestamp, dd->ts_gpu + (DkGpuAddr)c->slot * 32 + 16);
     c->list = dkCmdBufFinishList(c->cb);
     c->open = 0;
 }
@@ -1597,11 +1628,13 @@ static int dk_cmd_split(gpu_device* d, gpu_cmd* c, const gpu_submit_desc* how)
     return 1;   /* (not split: it goes on as one) */
 }
 
+/* RSX_GPU_TIMES (gpu.h): the GPU's time in the recordings read back so far, from each one's
+ * first timestamp (the top of the pipe, as the GPU takes it up) to its last (all its work done). */
 static uint64_t dk_gpu_ns(gpu_device* d, uint64_t* n)
 {
-    (void)d;
-    if (n) *n = 0;
-    return 0;
+    DkDev* dd = DD(d);
+    if (n) *n = dd->gpu_ns_n;
+    return dd->gpu_ns_sum;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1913,6 +1946,14 @@ static void* dk_native(gpu_device* d, uint32_t kind, uint64_t handle)
 void gpu_dk_report(gpu_device* d, uint32_t presents)
 {
     DkDev* dd = DD(d);
+    static uint64_t last_ticks;
+    static uint32_t last_presents;
+    if (presents > last_presents)
+        printf("[dk] backend: %.1f ms a present in its commands (%u presents)\n",
+               (double)armTicksToNs(s_be_ticks - last_ticks) / 1e6 / (double)(presents - last_presents),
+               presents - last_presents);
+    last_ticks = s_be_ticks;
+    last_presents = presents;
     printf("[dk] present %u: %llu MB of GPU memory in %u blocks, %u textures, %u buffers, %u pipelines, %u shaders, "
            "fence %llu of %llu, %u targets made\n",
            presents, (unsigned long long)(dd->mem_used >> 20), dd->nchunks, dd->ntex - dd->ntex_free,
@@ -1994,6 +2035,7 @@ static void bind_pass(gpu_cmd* c)
 
 void gpu_dk_cmd_pass_begin(gpu_cmd* c, const gpu_pass* pass)
 {
+    BE_SCOPE();
     DkDev* dd = DD(c->head.dev);
     if (memcmp(&c->pass, pass, sizeof *pass)) pass_barrier(c);
     c->pass = *pass;
@@ -2062,6 +2104,7 @@ static const float* tint(DkDev* dd, const float rgba[4], float out[4])
 
 void gpu_dk_cmd_clear_color(gpu_cmd* c, gpu_view rtv, const float rgba_in[4], const gpu_rect* rect)
 {
+    BE_SCOPE();
     DkDev* dd = DD(c->head.dev);
     const View* v = view_of(dd, rtv);
     if (!v) return;
@@ -2086,6 +2129,7 @@ void gpu_dk_cmd_clear_color(gpu_cmd* c, gpu_view rtv, const float rgba_in[4], co
 
 void gpu_dk_cmd_clear_depth(gpu_cmd* c, gpu_view dsv, uint32_t flags, float depth, uint8_t stencil, const gpu_rect* rect)
 {
+    BE_SCOPE();
     DkDev* dd = DD(c->head.dev);
     const View* v = view_of(dd, dsv);
     if (!v) return;
@@ -2102,6 +2146,7 @@ void gpu_dk_cmd_clear_depth(gpu_cmd* c, gpu_view dsv, uint32_t flags, float dept
 
 void gpu_dk_cmd_set_layout(gpu_cmd* c, gpu_layout layout)
 {
+    BE_SCOPE();
     c->layout = layout.id;
     memset(c->table, 0, sizeof c->table);
     c->tex_dirty = 1;
@@ -2119,6 +2164,7 @@ void gpu_dk_cmd_set_layout(gpu_cmd* c, gpu_layout layout)
 
 void gpu_dk_cmd_set_pipeline(gpu_cmd* c, gpu_pipeline pipeline)
 {
+    BE_SCOPE();
     DkDev* dd = DD(c->head.dev);
     if (!pipeline.v || pipeline.v > dd->npipe) return;
     const Pipe* p = &dd->pipe[pipeline.v - 1];
@@ -2148,6 +2194,7 @@ void gpu_dk_cmd_set_pipeline(gpu_cmd* c, gpu_pipeline pipeline)
 
 void gpu_dk_cmd_set_topology(gpu_cmd* c, uint32_t topology)
 {
+    BE_SCOPE();
     switch (topology) {
     case GPU_TOPO_POINTLIST: c->prim = DkPrimitive_Points; break;
     case GPU_TOPO_LINELIST: c->prim = DkPrimitive_Lines; break;
@@ -2159,6 +2206,7 @@ void gpu_dk_cmd_set_topology(gpu_cmd* c, uint32_t topology)
 
 void gpu_dk_cmd_set_depth_write(gpu_cmd* c, uint32_t on)
 {
+    BE_SCOPE();
     DkDev* dd = DD(c->head.dev);
     if (!c->pipeline) return;
     DkDepthStencilState ds = dd->pipe[c->pipeline - 1].ds;
@@ -2168,6 +2216,7 @@ void gpu_dk_cmd_set_depth_write(gpu_cmd* c, uint32_t on)
 
 void gpu_dk_cmd_set_viewport(gpu_cmd* c, const gpu_viewport* vp)
 {
+    BE_SCOPE();
     const DkViewport v = {vp->x, vp->y, vp->width, vp->height, vp->min_depth, vp->max_depth};
     dkCmdBufSetViewports(c->cb, 0, &v, 1);
     c->probe_vp = v;
@@ -2175,6 +2224,7 @@ void gpu_dk_cmd_set_viewport(gpu_cmd* c, const gpu_viewport* vp)
 
 void gpu_dk_cmd_set_scissor(gpu_cmd* c, const gpu_rect* rect)
 {
+    BE_SCOPE();
     c->scissor.x = rect->left > 0 ? (uint32_t)rect->left : 0;
     c->scissor.y = rect->top > 0 ? (uint32_t)rect->top : 0;
     c->scissor.width = rect->right > rect->left ? (uint32_t)(rect->right - rect->left) : 0;
@@ -2195,6 +2245,7 @@ static const Lay* lay_of(gpu_cmd* c)
 
 void gpu_dk_cmd_bind_cb(gpu_cmd* c, uint32_t slot, gpu_addr addr)
 {
+    BE_SCOPE();
     const Lay* l = lay_of(c);
     if (!l || slot >= l->desc.nslots || !addr) return;
     c->probe_cb[slot] = addr;
@@ -2207,6 +2258,7 @@ void gpu_dk_cmd_bind_cb(gpu_cmd* c, uint32_t slot, gpu_addr addr)
 
 void gpu_dk_cmd_bind_raw(gpu_cmd* c, uint32_t slot, gpu_addr addr)
 {
+    BE_SCOPE();
     const Lay* l = lay_of(c);
     if (!l || slot >= l->desc.nslots || !addr) return;
     const uint32_t reg = l->desc.slot[slot].reg;
@@ -2219,6 +2271,7 @@ void gpu_dk_cmd_bind_raw(gpu_cmd* c, uint32_t slot, gpu_addr addr)
 
 void gpu_dk_cmd_bind_table(gpu_cmd* c, uint32_t slot, gpu_table table)
 {
+    BE_SCOPE();
     if (slot < GPU_MAX_SLOTS) {
         c->table[slot] = table;
         c->tex_dirty = 1;
@@ -2227,6 +2280,7 @@ void gpu_dk_cmd_bind_table(gpu_cmd* c, uint32_t slot, gpu_table table)
 
 void gpu_dk_cmd_push_const(gpu_cmd* c, uint32_t slot, uint32_t count, const void* values, uint32_t first)
 {
+    BE_SCOPE();
     if (slot >= GPU_MAX_SLOTS || !count || (first + count) * 4 > PUSH_UBO) return;
     dkCmdBufPushConstants(c->cb, c->push_gpu + slot * PUSH_UBO, PUSH_UBO, first * 4, count * 4, values);
     trace(c, "push_const: slot %u, %u values from %u", slot, count, first);
@@ -2234,11 +2288,13 @@ void gpu_dk_cmd_push_const(gpu_cmd* c, uint32_t slot, uint32_t count, const void
 
 void gpu_dk_cmd_push_const1(gpu_cmd* c, uint32_t slot, uint32_t value, uint32_t first)
 {
+    BE_SCOPE();
     gpu_dk_cmd_push_const(c, slot, 1, &value, first);
 }
 
 void gpu_dk_cmd_set_vb(gpu_cmd* c, uint32_t slot, gpu_addr addr, uint32_t size, uint32_t stride)
 {
+    BE_SCOPE();
     if (slot >= DK_MAX_VERTEX_BUFFERS) return;
     if (slot == 0) {
         c->probe_vb = addr;
@@ -2251,6 +2307,7 @@ void gpu_dk_cmd_set_vb(gpu_cmd* c, uint32_t slot, gpu_addr addr, uint32_t size, 
 
 void gpu_dk_cmd_set_ib(gpu_cmd* c, gpu_addr addr, uint32_t size, gpu_format format)
 {
+    BE_SCOPE();
     (void)size;
     c->probe_ib = addr;
     c->idx_size = format == GPU_FORMAT_R32_UINT ? 4 : 2;
@@ -2398,6 +2455,7 @@ static void draw_probe(gpu_cmd* c, int indexed, uint32_t count, uint32_t first, 
 
 void gpu_dk_cmd_draw(gpu_cmd* c, uint32_t vertices, uint32_t instances, uint32_t first_vertex, uint32_t first_instance)
 {
+    BE_SCOPE();
     if (!c->pipeline) return;
     draw_probe(c, 0, vertices, first_vertex, 0);
     before_draw(c);
@@ -2409,6 +2467,7 @@ void gpu_dk_cmd_draw(gpu_cmd* c, uint32_t vertices, uint32_t instances, uint32_t
 void gpu_dk_cmd_draw_indexed(gpu_cmd* c, uint32_t indices, uint32_t instances, uint32_t first_index, int32_t base_vertex,
                              uint32_t first_instance)
 {
+    BE_SCOPE();
     if (!c->pipeline) return;
     draw_probe(c, 1, indices, first_index, base_vertex);
     before_draw(c);
@@ -2431,12 +2490,14 @@ static uint32_t state_flags(gpu_state after)
 
 void gpu_dk_cmd_barrier(gpu_cmd* c, gpu_texture texture, gpu_state before, gpu_state after)
 {
+    BE_SCOPE();
     (void)texture; (void)before;
     c->barrier |= state_flags(after);
 }
 
 void gpu_dk_cmd_barrier_n(gpu_cmd* c, uint32_t n, const gpu_barrier* list)
 {
+    BE_SCOPE();
     for (uint32_t i = 0; i < n; i++)
         c->barrier |= list[i].type == GPU_BARRIER_ALIASING ? 0x80000000u : state_flags(list[i].after);
 }
@@ -2464,6 +2525,7 @@ static void sub_size(const Tex* t, uint32_t sub, uint32_t* w, uint32_t* h)
 void gpu_dk_cmd_copy_texture(gpu_cmd* c, gpu_texture dst, uint32_t dst_sub, uint32_t x, uint32_t y, uint32_t z,
                              gpu_texture src, uint32_t src_sub, const gpu_box* box)
 {
+    BE_SCOPE();
     DkDev* dd = DD(c->head.dev);
     const Tex* d = tex_of(dd, dst);
     const Tex* s = tex_of(dd, src);
@@ -2501,6 +2563,7 @@ void gpu_dk_cmd_copy_texture(gpu_cmd* c, gpu_texture dst, uint32_t dst_sub, uint
 
 void gpu_dk_cmd_copy_texture_whole(gpu_cmd* c, gpu_texture dst, gpu_texture src)
 {
+    BE_SCOPE();
     DkDev* dd = DD(c->head.dev);
     const Tex* s = tex_of(dd, src);
     if (!s) return;
@@ -2511,6 +2574,7 @@ void gpu_dk_cmd_copy_texture_whole(gpu_cmd* c, gpu_texture dst, gpu_texture src)
 void gpu_dk_cmd_copy_buf_to_tex(gpu_cmd* c, gpu_texture dst, uint32_t dst_sub, uint32_t x, uint32_t y, uint32_t z,
                                 gpu_buffer src, const gpu_footprint* from)
 {
+    BE_SCOPE();
     DkDev* dd = DD(c->head.dev);
     const Tex* t = tex_of(dd, dst);
     const Buf* b = buf_of(dd, src);
@@ -2546,6 +2610,7 @@ void gpu_dk_cmd_copy_buf_to_tex(gpu_cmd* c, gpu_texture dst, uint32_t dst_sub, u
 void gpu_dk_cmd_copy_tex_to_buf(gpu_cmd* c, gpu_buffer dst, const gpu_footprint* to, gpu_texture src, uint32_t src_sub,
                                 const gpu_box* box)
 {
+    BE_SCOPE();
     DkDev* dd = DD(c->head.dev);
     const Tex* t = tex_of(dd, src);
     const Buf* b = buf_of(dd, dst);
@@ -2582,6 +2647,7 @@ void gpu_dk_cmd_copy_tex_to_buf(gpu_cmd* c, gpu_buffer dst, const gpu_footprint*
 void gpu_dk_cmd_copy_buffer(gpu_cmd* c, gpu_buffer dst, uint64_t dst_offset, gpu_buffer src, uint64_t src_offset,
                             uint64_t size)
 {
+    BE_SCOPE();
     DkDev* dd = DD(c->head.dev);
     const Buf* d = buf_of(dd, dst);
     const Buf* s = buf_of(dd, src);
@@ -2594,6 +2660,7 @@ void gpu_dk_cmd_copy_buffer(gpu_cmd* c, gpu_buffer dst, uint64_t dst_offset, gpu
 
 void gpu_dk_cmd_resolve(gpu_cmd* c, gpu_texture dst, uint32_t dst_sub, gpu_texture src, uint32_t src_sub, gpu_format format)
 {
+    BE_SCOPE();
     DkDev* dd = DD(c->head.dev);
     const Tex* d = tex_of(dd, dst);
     const Tex* s = tex_of(dd, src);
@@ -2630,6 +2697,7 @@ void gpu_dk_cmd_query_reset(gpu_cmd* c, gpu_query_pool pool, uint32_t first, uin
 
 void gpu_dk_cmd_query_begin(gpu_cmd* c, gpu_query_pool pool, uint32_t index)
 {
+    BE_SCOPE();
     const QPool* q = qpool_of(c, pool);
     if (!q || index >= q->count) return;
     dkCmdBufResetCounter(c->cb, DkCounter_SamplesPassed);
@@ -2637,6 +2705,7 @@ void gpu_dk_cmd_query_begin(gpu_cmd* c, gpu_query_pool pool, uint32_t index)
 
 void gpu_dk_cmd_query_end(gpu_cmd* c, gpu_query_pool pool, uint32_t index)
 {
+    BE_SCOPE();
     const QPool* q = qpool_of(c, pool);
     if (!q || index >= q->count) return;
     dkCmdBufReportCounter(c->cb, DkCounter_SamplesPassed, q->gpu + (uint64_t)index * 16);
@@ -2658,6 +2727,7 @@ void gpu_dk_cmd_query_resolve(gpu_cmd* c, gpu_query_pool pool, uint32_t first, u
 
 void gpu_dk_cmd_set_stencil_ref(gpu_cmd* c, uint32_t ref)
 {
+    BE_SCOPE();
     DkDev* dd = DD(c->head.dev);
     c->stencil_ref = ref;
     if (!c->pipeline) return;
@@ -2667,6 +2737,7 @@ void gpu_dk_cmd_set_stencil_ref(gpu_cmd* c, uint32_t ref)
 
 void gpu_dk_cmd_set_blend_factor(gpu_cmd* c, const float rgba[4])
 {
+    BE_SCOPE();
     dkCmdBufSetBlendConst(c->cb, rgba[0], rgba[1], rgba[2], rgba[3]);
 }
 
@@ -2816,6 +2887,16 @@ gpu_device* gpu_dk_create(const gpu_device_desc* desc)
         c->push = block(dd, GPU_MAX_SLOTS * PUSH_UBO, flags);
         if (!c->cb || !c->push) return NULL;
         c->push_gpu = dkMemBlockGetGpuAddr(c->push);
+    }
+    {   /* RSX_GPU_TIMES=1 or 2: the recorders' timestamps (gpu_ns) */
+        const char* e = getenv("RSX_GPU_TIMES");
+        if (e && atoi(e) > 0) {
+            dd->ts_mem = block(dd, DK_MEMBLOCK_ALIGNMENT, flags);
+            if (dd->ts_mem) {
+                dd->ts_cpu = dkMemBlockGetCpuAddr(dd->ts_mem);
+                dd->ts_gpu = dkMemBlockGetGpuAddr(dd->ts_mem);
+            }
+        }
     }
     {   /* the new targets' clears (init_target) */
         DkCmdBufMaker cm;

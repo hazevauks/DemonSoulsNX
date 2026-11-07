@@ -225,6 +225,7 @@ static void *watch_thread(void *arg)
                    detached.freed, detached.detached, detached.peak,
                    detached.lost ? ", and some the list had no room for" : "");
         last_detached = detached;
+        nx_game_threads_cpu_report(10ull * 1000 * 1000 * 1000);
         NxGuestStats now;
         nx_guest_stats(&now);
         if (!now.window)

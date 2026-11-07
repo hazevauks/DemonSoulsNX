@@ -123,6 +123,7 @@ screen at 30 a second.
 - Barriers are coarse: any gathered barrier waits for all the GPU's work before it.
 - New colour and depth targets are cleared to zero on the GPU before their first use (a list of
   their own, sent ahead of the next submit); other textures, placed or not, are not zeroed.
-- No GPU timings (`gpu_ns`), no present statistics, no pipeline cache (deko3D has no pipeline
-  objects to keep), and `buffer_import_host` is not offered: the guest window is not memory nvmap
-  takes.
+- GPU timings (`gpu_ns`, `RSX_GPU_TIMES=1`): each recording's first and last timestamp, read
+  when its slot is begun again; and the render thread's time in the backend's commands, in the
+  `[dk] backend` line. No present statistics, no pipeline cache (deko3D has no pipeline objects
+  to keep), and `buffer_import_host` is not offered: the guest window is not memory nvmap takes.

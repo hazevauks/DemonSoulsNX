@@ -3,6 +3,8 @@
 #ifndef NX_GAME_THREADS_H
 #define NX_GAME_THREADS_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -15,6 +17,9 @@ typedef struct {
 } NxThreadStats;
 
 void nx_game_threads_stats(NxThreadStats *out);
+
+/* DESNX_CPU_REPORT=1: the busiest threads over the last window_ns, in the log */
+void nx_game_threads_cpu_report(uint64_t window_ns);
 
 #ifdef __cplusplus
 }

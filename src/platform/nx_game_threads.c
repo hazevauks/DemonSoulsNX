@@ -17,6 +17,8 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include <switch.h>
 
@@ -38,6 +40,26 @@ static Mutex s_lock;
 static pthread_t s_detached[REAP_MAX];
 static unsigned s_count, s_freed, s_lost, s_peak;
 static bool s_reaper;
+
+/* Every thread made here, for DESNX_CPU_REPORT: its start routine and its ticks at the last report */
+#define CPU_MAX 512
+typedef struct CpuEntry {
+    pthread_t thread;
+    void *(*start)(void *);
+    u64 ticks;
+    bool primed;
+} CpuEntry;
+static CpuEntry s_cpu[CPU_MAX];
+static unsigned s_ncpu;
+
+static void cpu_forget(pthread_t thread)   /* (under s_lock) */
+{
+    for (unsigned i = 0; i < s_ncpu; i++)
+        if (s_cpu[i].thread == thread) {
+            s_cpu[i] = s_cpu[--s_ncpu];
+            return;
+        }
+}
 
 static void *reaper(void *arg);
 
@@ -90,6 +112,12 @@ int __wrap_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(
         attr = &bigger;
     }
     const int rc = __real_pthread_create(thread, attr, start, arg);
+    if (rc == 0) {
+        mutexLock(&s_lock);
+        if (s_ncpu < CPU_MAX)
+            s_cpu[s_ncpu++] = (CpuEntry){.thread = *thread, .start = start};
+        mutexUnlock(&s_lock);
+    }
     int state = PTHREAD_CREATE_JOINABLE;
     if (rc == 0 && attr && pthread_attr_getdetachstate(attr, &state) == 0 && state == PTHREAD_CREATE_DETACHED)
         add(*thread);
@@ -115,6 +143,7 @@ static void *reaper(void *arg)
                 if (ended(s_detached[i])) {
                     done = s_detached[i];
                     s_detached[i] = s_detached[--s_count];
+                    cpu_forget(done);
                     break;
                 }
             mutexUnlock(&s_lock);
@@ -127,6 +156,64 @@ static void *reaper(void *arg)
         }
     }
     return NULL;
+}
+
+/* DESNX_CPU_REPORT=1 (settings.txt): the busiest threads of the last window_ns, from the kernel's
+ * count of each thread's ticks, as a share of one core (the game has three). A thread is named by
+ * its id as the runtime's log prints it ("[THREAD n] host thread started ... hosttid=") and by
+ * its start routine (nro+ offset: tools/crash_symbolize.py names it). */
+void nx_game_threads_cpu_report(u64 window_ns)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("DESNX_CPU_REPORT");
+        on = e && *e && *e != '0';
+    }
+    if (!on || !window_ns)
+        return;
+    extern void _start(void);
+    typedef struct { unsigned i; u64 ns; } Use;
+    static Use use[CPU_MAX];
+    unsigned n = 0;
+    u64 all = 0;
+    mutexLock(&s_lock);
+    for (unsigned i = 0; i < s_ncpu;) {
+        u64 ticks = 0;
+        const Handle h = s_cpu[i].thread->thr.handle;
+        Result rc = svcGetInfo(&ticks, InfoType_ThreadTickCount, h, UINT64_MAX);
+        if (R_FAILED(rc))
+            rc = svcGetInfo(&ticks, InfoType_ThreadTickCountDeprecated, h, UINT64_MAX);
+        if (R_FAILED(rc)) {   /* ended and joined elsewhere: its handle is gone */
+            s_cpu[i] = s_cpu[--s_ncpu];
+            continue;
+        }
+        const u64 ns = s_cpu[i].primed ? armTicksToNs(ticks - s_cpu[i].ticks) : 0;
+        s_cpu[i].ticks = ticks;
+        s_cpu[i].primed = true;
+        all += ns;
+        if (ns)
+            use[n++] = (Use){i, ns};
+        i++;
+    }
+    for (unsigned a = 0; a < n && a < 10; a++)   /* the ten busiest first */
+        for (unsigned b = a + 1; b < n; b++)
+            if (use[b].ns > use[a].ns) {
+                const Use t = use[a];
+                use[a] = use[b];
+                use[b] = t;
+            }
+    char line[1024];
+    int len = snprintf(line, sizeof line, "cpu: %u threads, %.0f%% of a core in all (the game has three);",
+                       s_ncpu, 100.0 * (double)all / (double)window_ns);
+    for (unsigned a = 0; a < n && a < 10 && len < (int)sizeof line; a++) {
+        const CpuEntry *e = &s_cpu[use[a].i];
+        len += snprintf(line + len, sizeof line - (size_t)len, " %.0f%% %lu (nro+0x%lx)",
+                        100.0 * (double)use[a].ns / (double)window_ns,
+                        (unsigned long)(uint32_t)(uintptr_t)e->thread,
+                        (unsigned long)((uintptr_t)e->start - (uintptr_t)&_start));
+    }
+    mutexUnlock(&s_lock);
+    nx_log("%s\n", line);
 }
 
 void nx_game_threads_stats(NxThreadStats *out)
