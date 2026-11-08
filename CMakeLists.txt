@@ -253,6 +253,11 @@ if(TARGET desnx_host AND DESNX_PPU_CHUNKS)
 		-Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-label
 		-Wno-unused-but-set-variable)
 	target_compile_definitions(demonsouls_game PRIVATE _GNU_SOURCE DS_NO_SHADOW_STACK)
+	# The lifted SPU images read the thread pointer from TPIDR_EL0 (stage 15): a lifted SPU program
+	# reads a thread-local after every call, and with devkitA64's -mtp=soft each read was a call to
+	# __aarch64_read_tp. Every thread sets TPIDR_EL0 to that same pointer when it starts
+	# (src/platform/nx_game_threads.c). The PPU chunks are left as they are.
+	set_source_files_properties(${DESNX_SPU_CHUNKS} PROPERTIES COMPILE_OPTIONS "-mtp=tpidr_el0")
 	target_link_libraries(demonsouls_game PRIVATE desnx_host desnx_gpu desnx_platform nx m)
 	# libnx's start code calls nx_game_main.c's __wrap_main, which sets up the Switch and then runs
 	# the boot's main; and host stacks are capped at 16 MB, as libnx takes a whole stack from the heap.

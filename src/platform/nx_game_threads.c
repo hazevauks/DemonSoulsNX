@@ -101,8 +101,35 @@ int __syscall_thread_detach(struct __pthread_t *thread)
  * with deep recursion (stage 12c). libnx's default is far less. */
 #define MIN_STACK (1u << 20)
 
+/* The thread pointer in TPIDR_EL0 as well (stage 15). The lifted SPU images are built with
+ * -mtp=tpidr_el0 (CMakeLists.txt), so their thread-local reads -- the trampoline check after
+ * every call -- are one mrs instead of a call to libnx's __aarch64_read_tp, which reads the same
+ * pointer from the thread's ThreadVars (TPIDRRO_EL0 + 0x1F8). Horizon keeps TPIDR_EL0 for each
+ * thread and nothing else here uses it. Every thread made through pthread_create sets it before
+ * its start routine runs, and the main thread at the start (nx_game_main.c). */
+void nx_thread_pointer_set(void)
+{
+    extern void *__aarch64_read_tp(void);
+    void *const tp = __aarch64_read_tp();
+    __asm__ volatile("msr tpidr_el0, %0" : : "r"(tp));
+}
+
+typedef struct { void *(*start)(void *); void *arg; } Start;
+
+static void *started(void *p)
+{
+    const Start s = *(Start *)p;
+    free(p);
+    nx_thread_pointer_set();
+    return s.start(s.arg);
+}
+
 int __wrap_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)(void *), void *arg)
 {
+    Start *s = malloc(sizeof *s);
+    if (!s)
+        return EAGAIN;
+    *s = (Start){start, arg};
     size_t size = 0;
     pthread_attr_t bigger;
     if (!attr || (pthread_attr_getstacksize(attr, &size) == 0 && size < MIN_STACK)) {
@@ -113,7 +140,9 @@ int __wrap_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(
         pthread_attr_setstacksize(&bigger, MIN_STACK);
         attr = &bigger;
     }
-    const int rc = __real_pthread_create(thread, attr, start, arg);
+    const int rc = __real_pthread_create(thread, attr, started, s);
+    if (rc != 0)
+        free(s);
     if (rc == 0) {
         mutexLock(&s_lock);
         if (s_ncpu < CPU_MAX)

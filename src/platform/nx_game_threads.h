@@ -18,6 +18,9 @@ typedef struct {
 
 void nx_game_threads_stats(NxThreadStats *out);
 
+/* The calling thread's thread pointer into TPIDR_EL0 too (the lifted SPU images read it there) */
+void nx_thread_pointer_set(void);
+
 /* DESNX_CPU_REPORT=1: the busiest threads over the last window_ns, in the log */
 void nx_game_threads_cpu_report(uint64_t window_ns);
 

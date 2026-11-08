@@ -253,6 +253,7 @@ static void *boot_thread(void *arg)
 
 int __wrap_main(int argc, char **argv)
 {
+    nx_thread_pointer_set();   /* TPIDR_EL0, for the lifted SPU images (nx_game_threads.c) */
     nx_log_init(DESNX_VERSION ", the game");
     nx_crash_init(DESNX_VERSION ", the game", guest_context);
     nx_vfs_init();

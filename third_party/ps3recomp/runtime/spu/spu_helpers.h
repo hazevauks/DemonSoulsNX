@@ -341,7 +341,9 @@ static inline u128 spu_csflt(u128 a, int i8){ u128 r; double f=exp2((double)(i8-
     for(int i=0;i<4;i++) r._f32[i]=(float)((double)a._s32[i]*f); return r; }
 static inline u128 spu_cuflt(u128 a, int i8){ u128 r; double f=exp2((double)(i8-155));
     for(int i=0;i<4;i++) r._f32[i]=(float)((double)a._u32[i]*f); return r; }
+#if !defined(__aarch64__)
 static inline u128 spu_fm(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._f32[i]=(a._f32[i]==0.0f||b._f32[i]==0.0f)?0.0f:a._f32[i]*b._f32[i]; return r; }
+#endif
 /* Fused multiply-add. Without an FMA unit (__FMA__ unset), fmaf is the CRT
  * software routine (~3% of an SPU-heavy profile). The float product is exact
  * in double (24+24 bits < 53), so double mul+add then one rounding matches
@@ -352,9 +354,47 @@ static inline u128 spu_fm(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._f32[
 #else
 #define SPU__FMA(a, b, c) ((float)((double)(a) * (double)(b) + (double)(c)))
 #endif
+#if defined(__aarch64__)
+/* DemonSoulsNX: fm, fma, fms and fnms in NEON on arm64, the scalar forms' arithmetic lane for
+ * lane: the product and the sum in double (SPU__FMA without __FMA__), one rounding to float, and
+ * the zero rule and the infinity clamp as masks instead of a branch per lane. The scalar loops
+ * took 28 to 44 instructions with branches; these take 5 to 16 without. The same FPCR governs
+ * both, so the results are the same bits. */
+#include <arm_neon.h>
+static inline float32x4_t spu__f4(u128 a) { float32x4_t v; memcpy(&v, &a, 16); return v; }
+static inline u128 spu__u4(float32x4_t v) { u128 r; memcpy(&r, &v, 16); return r; }
+static inline float32x4_t spu__fma4(float32x4_t a, float32x4_t b, float32x4_t c) {
+    const float64x2_t lo = vaddq_f64(vmulq_f64(vcvt_f64_f32(vget_low_f32(a)), vcvt_f64_f32(vget_low_f32(b))),
+                                     vcvt_f64_f32(vget_low_f32(c)));
+    const float64x2_t hi = vaddq_f64(vmulq_f64(vcvt_high_f64_f32(a), vcvt_high_f64_f32(b)), vcvt_high_f64_f32(c));
+    return vcvt_high_f32_f64(vcvt_f32_f64(lo), hi);
+}
+static inline float32x4_t spu__clamp4(float32x4_t v) {   /* spu_clamp_smax on each lane */
+    const uint32x4_t u = vreinterpretq_u32_f32(v);
+    const uint32x4_t inf = vceqq_u32(vandq_u32(u, vdupq_n_u32(0x7FFFFFFFu)), vdupq_n_u32(0x7F800000u));
+    const uint32x4_t big = vorrq_u32(vandq_u32(u, vdupq_n_u32(0x80000000u)), vdupq_n_u32(0x7F7FFFFFu));
+    return vreinterpretq_f32_u32(vbslq_u32(inf, big, u));
+}
+static inline uint32x4_t spu__zero2(float32x4_t a, float32x4_t b) { return vorrq_u32(vceqzq_f32(a), vceqzq_f32(b)); }
+static inline u128 spu_fm(u128 a, u128 b) {
+    const float32x4_t A = spu__f4(a), B = spu__f4(b);
+    return spu__u4(vbslq_f32(spu__zero2(A, B), vdupq_n_f32(0.0f), vmulq_f32(A, B)));
+}
+static inline u128 spu_fma(u128 a, u128 b, u128 c) {
+    const float32x4_t A = spu__f4(a), B = spu__f4(b), C = spu__f4(c);
+    return spu__u4(vbslq_f32(spu__zero2(A, B), C, spu__fma4(A, B, C)));
+}
+static inline u128 spu_fms(u128 a, u128 b, u128 c) {
+    return spu__u4(spu__fma4(spu__clamp4(spu__f4(a)), spu__clamp4(spu__f4(b)), vnegq_f32(spu__f4(c))));
+}
+static inline u128 spu_fnms(u128 a, u128 b, u128 c) {
+    return spu__u4(spu__fma4(spu__clamp4(spu__f4(a)), vnegq_f32(spu__clamp4(spu__f4(b))), spu__f4(c)));
+}
+#else
 static inline u128 spu_fma(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._f32[i]=(a._f32[i]==0.0f||b._f32[i]==0.0f)?c._f32[i]:SPU__FMA(a._f32[i], b._f32[i], c._f32[i]); return r; }
 static inline u128 spu_fms(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._f32[i]=SPU__FMA(spu_clamp_smax(a._f32[i]), spu_clamp_smax(b._f32[i]), -c._f32[i]); return r; }
 static inline u128 spu_fnms(u128 a, u128 b, u128 c) { u128 r; for(int i=0;i<4;i++) r._f32[i]=SPU__FMA(spu_clamp_smax(a._f32[i]), -spu_clamp_smax(b._f32[i]), c._f32[i]); return r; }
+#endif
 static inline u128 spu_fceq(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._u32[i]=(a._f32[i]==b._f32[i])?0xFFFFFFFFu:0; return r; }
 static inline u128 spu_fcgt(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._u32[i]=(a._f32[i]>b._f32[i])?0xFFFFFFFFu:0; return r; }
 
