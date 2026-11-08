@@ -19,11 +19,13 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 
 #include <switch.h>
 
 #include "nx_game_threads.h"
 #include "nx_log.h"
+#include "nx_paths.h"
 
 #define REAP_MAX        1024
 #define REAP_EVERY_NS   (100ull * 1000 * 1000)
@@ -214,6 +216,168 @@ void nx_game_threads_cpu_report(u64 window_ns)
     }
     mutexUnlock(&s_lock);
     nx_log("%s\n", line);
+}
+
+/* ---------------------------------------------------------------------------
+ * The sampling profiler
+ *
+ * DESNX_PROFILE=1 (settings.txt): every second the six threads that used the most CPU in it are
+ * picked, and every 2 ms each is paused for an instant (svcSetThreadActivity) and its pc and lr
+ * read (svcGetThreadContext3). Every 15 seconds the samples go to SD_LOG/profile/<n>.bin with the
+ * threads they came from; tools/profile_report.py names the functions from the game's ELF. A
+ * paused thread is let go before anything else is done, so no lock it holds is ever waited on.
+ * The profiler's own thread is made with __real_pthread_create, so it is not on the list.
+ * -------------------------------------------------------------------------*/
+
+#define PROF_TOP       6
+#define PROF_TICK_NS   (2ull * 1000 * 1000)
+#define PROF_WINDOW    7500u          /* ticks: 15 s */
+#define PROF_SAMPLES   65536u
+#define PROF_THREADS   64u
+
+typedef struct { uint32_t thread, pad; uint64_t pc, lr; } ProfSample;
+typedef struct { uint32_t id, pad; uint64_t start; } ProfThread;
+
+static ProfSample s_prof[PROF_SAMPLES];
+static ProfThread s_prof_threads[PROF_THREADS];
+
+/* The busiest threads since the last call, by the kernel's ticks: their handles and slots in the
+ * window's table (new ones are added to it). */
+static unsigned prof_pick(Handle *h, uint32_t *slot, unsigned *nthreads)
+{
+    static u64 last[CPU_MAX];
+    static pthread_t who[CPU_MAX];
+    typedef struct { Handle h; u64 used; uint32_t id; uint64_t start; } Pick;
+    Pick pick[PROF_TOP];
+    unsigned npick = 0;
+    mutexLock(&s_lock);
+    for (unsigned i = 0; i < s_ncpu; i++) {
+        u64 ticks = 0;
+        const Handle th = s_cpu[i].thread->thr.handle;
+        if (R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCount, th, UINT64_MAX)) &&
+            R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCountDeprecated, th, UINT64_MAX)))
+            continue;
+        const u64 used = who[i] == s_cpu[i].thread ? ticks - last[i] : 0;
+        who[i] = s_cpu[i].thread;
+        last[i] = ticks;
+        const Pick p = {th, used, (uint32_t)(uintptr_t)s_cpu[i].thread,
+                        (uint64_t)(uintptr_t)s_cpu[i].start};
+        unsigned at = npick < PROF_TOP ? npick++ : PROF_TOP;
+        if (at == PROF_TOP) {   /* full: replace the least busy if this one used more */
+            unsigned least = 0;
+            for (unsigned k = 1; k < PROF_TOP; k++)
+                if (pick[k].used < pick[least].used) least = k;
+            if (pick[least].used >= used) continue;
+            at = least;
+        }
+        pick[at] = p;
+    }
+    mutexUnlock(&s_lock);
+    for (unsigned k = 0; k < npick; k++) {
+        unsigned s = 0;
+        while (s < *nthreads && s_prof_threads[s].id != pick[k].id) s++;
+        if (s == *nthreads && *nthreads < PROF_THREADS)
+            s_prof_threads[(*nthreads)++] = (ProfThread){pick[k].id, 0, pick[k].start};
+        h[k] = pick[k].h;
+        slot[k] = s < PROF_THREADS ? s : PROF_THREADS - 1;
+    }
+    return npick;
+}
+
+static void prof_write(unsigned window, unsigned nthreads, unsigned nsamples, u64 ns)
+{
+    extern void _start(void);
+    extern char __end__[];
+    char path[96];
+    mkdir(NX_LOG_DIR "/profile", 0777);
+    snprintf(path, sizeof path, NX_LOG_DIR "/profile/%u.bin", window);
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        nx_log("profile: %s could not be written\n", path);
+        return;
+    }
+    const uint64_t head[3] = {(uint64_t)(uintptr_t)&_start, (uint64_t)(uintptr_t)__end__, ns};
+    const uint32_t counts[4] = {window, nthreads, nsamples, 0};
+    fwrite("DSNXPRF1", 1, 8, f);
+    fwrite(head, sizeof head, 1, f);
+    fwrite(counts, sizeof counts, 1, f);
+    fwrite(s_prof_threads, sizeof s_prof_threads[0], nthreads, f);
+    fwrite(s_prof, sizeof s_prof[0], nsamples, f);
+    fclose(f);
+    nx_log("profile: window %u, %u samples of %u threads, in %s\n", window, nsamples, nthreads, path);
+}
+
+static u64 thread_ticks(Handle h)
+{
+    u64 t = 0;
+    if (R_FAILED(svcGetInfo(&t, InfoType_ThreadTickCount, h, UINT64_MAX)) &&
+        R_FAILED(svcGetInfo(&t, InfoType_ThreadTickCountDeprecated, h, UINT64_MAX)))
+        return 0;
+    return t;
+}
+
+/* A thread is paused only when it ran for at least half the time since the last sample: one
+ * that is waiting in the kernel is left alone. The first profile paused waiting threads too,
+ * and the game stopped for good at a loading screen (2026-11-07). */
+static void *profiler(void *arg)
+{
+    (void)arg;
+    svcSetThreadPriority(CUR_THREAD_HANDLE, 0x1C);
+    Handle h[PROF_TOP];
+    uint32_t slot[PROF_TOP];
+    u64 seen[PROF_TOP], last_at = armGetSystemTick();
+    unsigned npick = 0, nthreads = 0, nsamples = 0, window = 0, warned = 0;
+    u64 t0 = armGetSystemTick();
+    for (unsigned tick = 0;; tick++) {
+        if (tick % 500 == 0) {   /* each second: the busiest threads of the last one */
+            npick = prof_pick(h, slot, &nthreads);
+            for (unsigned k = 0; k < npick; k++) seen[k] = thread_ticks(h[k]);
+            last_at = armGetSystemTick();
+        }
+        const u64 now = armGetSystemTick(), elapsed = now - last_at;
+        last_at = now;
+        for (unsigned k = 0; k < npick && nsamples < PROF_SAMPLES; k++) {
+            const u64 tk = thread_ticks(h[k]);
+            const u64 ran = tk - seen[k];
+            seen[k] = tk;
+            if (!tk || ran * 2 < elapsed)   /* mostly not running: maybe waiting in the kernel */
+                continue;
+            ThreadContext ctx;
+            if (R_FAILED(svcSetThreadActivity(h[k], ThreadActivity_Paused)))
+                continue;
+            const Result rc = svcGetThreadContext3(&ctx, h[k]);
+            svcSetThreadActivity(h[k], ThreadActivity_Runnable);
+            if (R_FAILED(rc)) {
+                if (!warned++) nx_log("profile: a thread's registers could not be read (%#x)\n", rc);
+                continue;
+            }
+            s_prof[nsamples++] = (ProfSample){slot[k], 0, ctx.pc.x, ctx.lr};
+        }
+        if (tick % PROF_WINDOW == PROF_WINDOW - 1) {
+            const u64 t1 = armGetSystemTick();
+            prof_write(++window, nthreads, nsamples, armTicksToNs(t1 - t0));
+            t0 = t1;
+            nthreads = nsamples = 0;
+            npick = prof_pick(h, slot, &nthreads);
+            for (unsigned k = 0; k < npick; k++) seen[k] = thread_ticks(h[k]);
+            last_at = armGetSystemTick();
+        }
+        svcSleepThread(PROF_TICK_NS);
+    }
+    return NULL;
+}
+
+void nx_game_threads_profile_start(void)
+{
+    const char *e = getenv("DESNX_PROFILE");
+    if (!e || !*e || *e == '0')
+        return;
+    pthread_t t;
+    if (__real_pthread_create(&t, NULL, profiler, NULL) != 0) {
+        nx_log("profile: the profiler's thread did not start\n");
+        return;
+    }
+    nx_log("profile: sampling the six busiest threads every 2 ms, a file every 15 s (DESNX_PROFILE)\n");
 }
 
 void nx_game_threads_stats(NxThreadStats *out)

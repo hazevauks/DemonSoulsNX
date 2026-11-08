@@ -267,6 +267,7 @@ int __wrap_main(int argc, char **argv)
     if (!getenv("DES_PRECOMPILE"))
         setenv("DES_PRECOMPILE", "0", 1);
     nx_osk_init();          /* the PS3's on-screen keyboard as the Switch's */
+    nx_game_threads_profile_start();   /* DESNX_PROFILE: the sampling profiler */
     NxSystem system;
     nx_system_read(&system);
     nx_system_log(&system);

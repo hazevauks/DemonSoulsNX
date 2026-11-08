@@ -47,6 +47,9 @@
 #PERF=1
 #RSX_GPU_TIMES=1
 #DESNX_CPU_REPORT=1
+# The busiest threads sampled every 2 ms (only while they run), a file every 15 s in
+# SD_LOG/profile (tools/profile_report.py names the functions).
+#DESNX_PROFILE=1
 
 # The game's shaders, compiled on the console: each step's time in the log, and the GLSL of one
 # that fails. Soulbrandt's pass over every shader at the start is off here; 1 runs it.

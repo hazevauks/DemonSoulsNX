@@ -21,6 +21,9 @@ void nx_game_threads_stats(NxThreadStats *out);
 /* DESNX_CPU_REPORT=1: the busiest threads over the last window_ns, in the log */
 void nx_game_threads_cpu_report(uint64_t window_ns);
 
+/* DESNX_PROFILE=1: sample the busiest threads' pc and lr into SD_LOG/profile/<n>.bin */
+void nx_game_threads_profile_start(void);
+
 #ifdef __cplusplus
 }
 #endif

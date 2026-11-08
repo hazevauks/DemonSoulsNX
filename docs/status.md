@@ -276,10 +276,20 @@ thread's time from the kernel, new):
 | The GPU | 27 to 34 ms a frame: it would keep up with about 30 frames a second |
 | The backend's commands (`[dk] backend`) | 1.4 to 1.6 ms a frame of the render thread |
 | The core (`[PERF]`) | of the render thread's time, about half in `render_frame` (recording some 2,500 draws a frame) and half in `guest` (waiting on the game) |
-| The CPU | 252% to 296% of a core in all, of the three the game has: it is full. The SPU that runs the game's heavy jobs (`spu_exec_thread_proc`, Soulbrandt's "image 2") 71% to 83%; the main SPURS thread (`spu_async_thread`) 30% to 45%, and each job chain walk's 10% to 15%; a runtime thread (`thread_trampoline`) about 20%; HighGraphics (the game's drawing thread) about 17%; the game's main thread about 15%; ChrInsManThread about 15% |
+| The CPU | 252% to 296% of a core in all, of the three the game has: it is full. A dedicated SPU thread (`spu_exec_thread_proc`, running image `spu_0010`, the sound's: see below) 71% to 83%; the main SPURS thread (`spu_async_thread`) 30% to 45%, and each job chain walk's 10% to 15%; a runtime thread (`thread_trampoline`) about 20%; HighGraphics (the game's drawing thread) about 17%; the game's main thread about 15%; ChrInsManThread about 15% |
 
 So the frame rate is the CPU's: the SPUs' emulation and the game's own threads on three A57
 cores, not the renderer. The title screen keeps 30 frames a second.
+
+Then where in the code, with a sampling profiler (`DESNX_PROFILE=1`: every 2 ms the busiest
+threads' pc and lr, a file a 15 s window in `SD_LOG/profile`, named on the PC by
+`tools/profile_report.py` from the game's ELF):
+
+| What | Result |
+| --- | --- |
+| The first profile | the game stopped for good at the tutorial's loading screen: the profiler paused threads that were waiting in the kernel. It now pauses only a thread that ran for most of the time since its last sample, and the next run played the tutorial at its usual rate |
+| The tutorial (89,052 samples over 152 s, running threads only) | the SPU image `spu_0010` 40.8% of all samples, one of its regions (`0x0D88`) 17.6% alone; the SPU atomics' emulation (`spu_wrch`, the lock-line locks, `memcmp`, the reservations) about 12%; the renderer a few percent. The image runs with or without work: the hung run's profile had it at 94% of a core with no frame drawn |
+| The SPU images at `-O3` (GCC's full vectorization), the PPU chunks left at `-O2` | 132 frames in 10 s against 115, but the image `spu_0010` stopped after 100 seconds and the sound with it (the mixer went on, at 0.000): it is the sound's SPU, and `-O3` broke it. Back to `-O2`; the gain was the sound's core |
 
 ## Not checked yet
 
